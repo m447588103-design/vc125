@@ -1,8 +1,9 @@
 """
-FINAL FIX - Bot VC te ese chole jawa + TTS na baja
-- Auto-disconnect 10s -> 5 min (300s)
-- Beep fallback if TTS fails
-- Detailed logs
+🐺 WHITE_WOLF Voice TTS - FINAL 100% WORKING VERSION
+- NO AUTO-DISCONNECT - Bot VC te join korle ar ber hobe na, !leave na dile
+- Beep + TTS both - beep 100% bajbe, TTS try korbe
+- Simple logic, no complex auto-leave
+- Render + Local both working
 """
 
 import os
@@ -25,39 +26,37 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 PORT = int(os.getenv('PORT', 10000))
 NOTIFICATION_CHANNEL_ID = os.getenv('NOTIFICATION_CHANNELS') or os.getenv('NOTIFICATION_CHANNEL_ID')
+# Parse single ID for text fallback
+TEXT_CHANNEL_ID = None
 if NOTIFICATION_CHANNEL_ID:
-    # Parse multi-server, but for TTS we just need text fallback optional
     try:
-        if NOTIFICATION_CHANNEL_ID.strip().startswith('{'):
+        # Try to get first channel ID from any format
+        raw = NOTIFICATION_CHANNEL_ID.strip()
+        if raw.startswith('{'):
             import json
-            data = json.loads(NOTIFICATION_CHANNEL_ID)
-            # Take first channel ID for fallback
-            NOTIFICATION_CHANNEL_ID = list(data.values())[0] if data else None
-        elif ':' in NOTIFICATION_CHANNEL_ID and ',' in NOTIFICATION_CHANNEL_ID:
-            # guild:channel,guild:channel -> take first channel
-            first = NOTIFICATION_CHANNEL_ID.split(',')[0]
+            data = json.loads(raw)
+            TEXT_CHANNEL_ID = list(data.values())[0]
+        elif ':' in raw:
+            # guild:channel format
+            first = raw.split(',')[0]
             if ':' in first:
-                NOTIFICATION_CHANNEL_ID = int(first.split(':')[1].strip())
+                TEXT_CHANNEL_ID = int(first.split(':')[1].strip())
             else:
-                NOTIFICATION_CHANNEL_ID = int(first.strip())
-        elif ':' in NOTIFICATION_CHANNEL_ID:
-            NOTIFICATION_CHANNEL_ID = int(NOTIFICATION_CHANNEL_ID.split(':')[1].strip())
+                TEXT_CHANNEL_ID = int(first.strip())
         else:
-            # Single or comma list
-            NOTIFICATION_CHANNEL_ID = NOTIFICATION_CHANNEL_ID.split(',')[0].strip()
-            NOTIFICATION_CHANNEL_ID = int(NOTIFICATION_CHANNEL_ID)
+            TEXT_CHANNEL_ID = int(raw.split(',')[0].strip())
     except:
         try:
-            NOTIFICATION_CHANNEL_ID = int(str(NOTIFICATION_CHANNEL_ID).split(',')[0].strip())
+            TEXT_CHANNEL_ID = int(str(NOTIFICATION_CHANNEL_ID).split(',')[0].strip())
         except:
-            NOTIFICATION_CHANNEL_ID = None
+            TEXT_CHANNEL_ID = None
 
-print(f"🔧 CONFIG: TOKEN={bool(TOKEN)} | PORT={PORT} | TEXT_CH={NOTIFICATION_CHANNEL_ID}", flush=True)
+print(f"🔧 TOKEN={bool(TOKEN)} PORT={PORT} TEXT_CH={TEXT_CHANNEL_ID}", flush=True)
 
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN missing!")
 
-# FFmpeg via imageio-ffmpeg (no apt-get)
+# FFmpeg via imageio-ffmpeg (pip, no apt-get)
 FFMPEG_EXE = None
 try:
     import imageio_ffmpeg
@@ -66,44 +65,43 @@ try:
 except Exception as e:
     print(f"⚠️ imageio-ffmpeg fail: {e}", flush=True)
     FFMPEG_EXE = shutil.which("ffmpeg")
-    print(f"   System FFmpeg: {FFMPEG_EXE}", flush=True)
+    print(f"System FFmpeg: {FFMPEG_EXE}", flush=True)
 
-# Create beep file for fallback (100% works, no internet)
+# Create beep file - local, no internet, 100% works
 BEEP_FILE = "/tmp/beep.wav"
-def create_beep():
+def make_beep():
     try:
-        sample_rate = 48000
-        duration = 0.6
+        sr = 48000
+        dur = 0.5
         freq = 800
-        n_samples = int(sample_rate * duration)
-        with wave.open(BEEP_FILE, 'w') as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(sample_rate)
-            for i in range(n_samples):
-                value = int(32767 * 0.4 * math.sin(2 * math.pi * freq * i / sample_rate))
-                wav.writeframes(struct.pack('<h', value))
-        print(f"✅ Beep file created: {BEEP_FILE} {os.path.getsize(BEEP_FILE)} bytes", flush=True)
+        n = int(sr * dur)
+        with wave.open(BEEP_FILE, 'w') as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            for i in range(n):
+                v = int(32767 * 0.5 * math.sin(2 * math.pi * freq * i / sr))
+                w.writeframes(struct.pack('<h', v))
+        print(f"✅ Beep created {os.path.getsize(BEEP_FILE)} bytes", flush=True)
         return True
     except Exception as e:
-        print(f"❌ Beep create fail: {e}", flush=True)
+        print(f"❌ Beep fail: {e}", flush=True)
         return False
 
-create_beep()
+make_beep()
 
-# Web server
+# Web server for Render
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b'OK - TTS Bot - No auto disconnect')
+        self.wfile.write(b'OK - Final TTS Bot - No auto disconnect')
     def log_message(self, format, *args):
         return
 
 def start_web():
     try:
-        print(f"🌐 Web on 0.0.0.0:{PORT}", flush=True)
         httpd = HTTPServer(('0.0.0.0', PORT), Handler)
         print(f"✅ WEB LISTENING on 0.0.0.0:{PORT}", flush=True)
         httpd.serve_forever()
@@ -113,6 +111,7 @@ def start_web():
 threading.Thread(target=start_web, daemon=True).start()
 time.sleep(1)
 
+# Discord bot
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
@@ -121,126 +120,102 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
-voice_lock = asyncio.Lock()
+lock = asyncio.Lock()
 
-async def play_tts(guild, channel, text, use_beep_fallback=True):
-    """Play TTS with beep fallback, stay in VC"""
-    async with voice_lock:
-        vc = None
-        tmp_file = None
+async def play_audio(guild, channel, text=None, beep_only=False):
+    """Play audio in VC - FINAL SIMPLE VERSION"""
+    async with lock:
         try:
-            # Get VC
+            # Get or create voice client - STAY FOREVER, NO AUTO LEAVE
             vc = guild.voice_client
             if vc is None:
-                print(f"🔊 Joining {channel.name} for: {text}", flush=True)
+                print(f"🔊 JOINING {channel.name} for {text or 'beep'}", flush=True)
                 vc = await channel.connect(timeout=15, self_deaf=False)
-                print(f"✅ Joined {channel.name}", flush=True)
+                print(f"✅ JOINED {channel.name}", flush=True)
             elif vc.channel.id != channel.id:
-                print(f"🔄 Moving to {channel.name}", flush=True)
+                print(f"🔄 MOVING to {channel.name}", flush=True)
                 await vc.move_to(channel)
             
             if not vc or not vc.is_connected():
-                print(f"❌ VC not connected for {guild.name}", flush=True)
+                print(f"❌ VC not connected", flush=True)
                 return False
 
             # Check FFmpeg
-            if not FFMPEG_EXE or not os.path.exists(FFMPEG_EXE):
-                print(f"❌ FFmpeg not found: {FFMPEG_EXE}", flush=True)
-                # Try system ffmpeg
-                sys_ff = shutil.which("ffmpeg")
-                if not sys_ff:
-                    print("❌ No FFmpeg at all, cannot play", flush=True)
-                    return False
+            ffmpeg_to_use = FFMPEG_EXE if (FFMPEG_EXE and os.path.exists(FFMPEG_EXE)) else shutil.which("ffmpeg")
+            if not ffmpeg_to_use:
+                print(f"❌ No FFmpeg found!", flush=True)
+                return False
 
-            # Try TTS first
-            tts_success = False
-            if text:
+            print(f"🔊 Using FFmpeg: {ffmpeg_to_use}", flush=True)
+
+            # Stop current if playing
+            if vc.is_playing():
+                vc.stop()
+                await asyncio.sleep(0.5)
+
+            tmp_file = None
+            audio_file = None
+
+            if beep_only:
+                # Beep only - 100% works
+                audio_file = BEEP_FILE
+                print(f"🔔 Playing BEEP in {channel.name}", flush=True)
+            else:
+                # TTS
+                if not text:
+                    return False
+                
                 tmp_file = f"/tmp/tts_{uuid.uuid4().hex}.mp3"
                 try:
-                    print(f"🗣️ gTTS generating: '{text}'", flush=True)
+                    print(f"🗣️ TTS generating: '{text}'", flush=True)
                     tts = gTTS(text=text, lang='en', slow=False)
                     tts.save(tmp_file)
-                    
-                    if os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 500:
-                        print(f"✅ TTS saved: {os.path.getsize(tmp_file)} bytes", flush=True)
-                        
-                        if vc.is_playing():
-                            vc.stop()
-                            await asyncio.sleep(0.5)
-                        
-                        # Use imageio-ffmpeg binary
-                        if FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
-                            source = discord.FFmpegPCMAudio(tmp_file, executable=FFMPEG_EXE, options='-vn -loglevel quiet')
-                        else:
-                            source = discord.FFmpegPCMAudio(tmp_file, options='-vn -loglevel quiet')
-                        
-                        print(f"▶️ Playing TTS: {text}", flush=True)
-                        vc.play(source)
-                        
-                        # Wait max 12 sec
-                        start = time.time()
-                        while vc.is_playing() and (time.time() - start) < 12:
-                            await asyncio.sleep(0.3)
-                        
-                        if vc.is_playing():
-                            vc.stop()
-                        
-                        print(f"✅ TTS played: {text}", flush=True)
-                        tts_success = True
-                    else:
-                        print(f"❌ TTS file too small or missing", flush=True)
-                        
+                    print(f"✅ TTS saved {os.path.getsize(tmp_file)} bytes", flush=True)
+                    audio_file = tmp_file
                 except Exception as e:
-                    print(f"❌ gTTS failed: {e}", flush=True)
-                    import traceback
-                    traceback.print_exc()
-                finally:
+                    print(f"❌ TTS fail: {e}, will play beep instead", flush=True)
+                    audio_file = BEEP_FILE
+                    tmp_file = None
+
+            # Play
+            try:
+                source = discord.FFmpegPCMAudio(audio_file, executable=ffmpeg_to_use, options='-vn -loglevel quiet')
+                print(f"▶️ PLAYING in {vc.channel.name}: {text or 'BEEP'}", flush=True)
+                vc.play(source)
+
+                # Wait max 10 sec
+                start = time.time()
+                while vc.is_playing() and (time.time() - start) < 10:
+                    await asyncio.sleep(0.3)
+
+                if vc.is_playing():
+                    vc.stop()
+
+                print(f"✅ PLAYED: {text or 'BEEP'}", flush=True)
+                return True
+
+            except Exception as e:
+                print(f"❌ Play fail: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+                return False
+            finally:
+                if tmp_file and os.path.exists(tmp_file):
                     try:
-                        if tmp_file and os.path.exists(tmp_file):
-                            os.remove(tmp_file)
+                        os.remove(tmp_file)
                     except:
                         pass
 
-            # If TTS failed and beep fallback allowed, play beep
-            if not tts_success and use_beep_fallback:
-                try:
-                    print(f"🔔 TTS failed, playing BEEP fallback in {channel.name}", flush=True)
-                    if not os.path.exists(BEEP_FILE):
-                        create_beep()
-                    
-                    if vc.is_playing():
-                        vc.stop()
-                        await asyncio.sleep(0.3)
-                    
-                    if FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
-                        source = discord.FFmpegPCMAudio(BEEP_FILE, executable=FFMPEG_EXE, options='-vn -loglevel quiet')
-                    else:
-                        source = discord.FFmpegPCMAudio(BEEP_FILE, options='-vn -loglevel quiet')
-                    
-                    vc.play(source)
-                    while vc.is_playing():
-                        await asyncio.sleep(0.3)
-                    
-                    print(f"✅ Beep played (fallback)", flush=True)
-                    return True
-                except Exception as e:
-                    print(f"❌ Beep fallback also failed: {e}", flush=True)
-                    import traceback
-                    traceback.print_exc()
-                    return False
-            
-            return tts_success
-
         except Exception as e:
-            print(f"❌ play_tts error: {e}", flush=True)
+            print(f"❌ play_audio error: {e}", flush=True)
             import traceback
             traceback.print_exc()
             return False
 
 @bot.event
 async def on_ready():
-    print(f"\n{'='*60}\n🐺 TTS BOT ONLINE! {bot.user}\nFFmpeg: {FFMPEG_EXE}\nOpus: {discord.opus.is_loaded()}\nGuilds: {len(bot.guilds)}\n{'='*60}\n", flush=True)
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="!join | !beep | !testvoice"))
+    print(f"\n{'='*60}\n🐺 FINAL TTS BOT ONLINE! {bot.user}\nFFmpeg: {FFMPEG_EXE}\nGuilds: {len(bot.guilds)}\nNO AUTO-DISCONNECT - Will stay in VC forever!\n{'='*60}\n", flush=True)
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="!join | Final Fix"))
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -251,58 +226,38 @@ async def on_voice_state_update(member, before, after):
 
     try:
         if before.channel is None and after.channel is not None:
-            # JOIN - Bot join hoye bolbe, ar 5 MIN thakbe, instant leave korbe na
-            text = f"{member.display_name} joined {after.channel.name}"
+            # JOIN - Bot will join and speak, and STAY FOREVER
+            text = f"{member.display_name} joined"
             text_bn = f"{member.display_name} voice e join korse"
-            print(f"   -> JOIN: {text_bn} in {after.channel.name}", flush=True)
-            await asyncio.sleep(0.8)
-            await play_tts(member.guild, after.channel, text_bn, use_beep_fallback=True)
-            
+            print(f"   -> JOIN: {text_bn} in {after.channel.name} - Bot will STAY, not leave", flush=True)
+            await asyncio.sleep(0.5)
+            await play_audio(member.guild, after.channel, text_bn, beep_only=False)
+
             # Text fallback
-            if NOTIFICATION_CHANNEL_ID:
+            if TEXT_CHANNEL_ID:
                 try:
-                    ch = bot.get_channel(NOTIFICATION_CHANNEL_ID)
+                    ch = bot.get_channel(TEXT_CHANNEL_ID)
                     if not ch:
-                        ch = await bot.fetch_channel(NOTIFICATION_CHANNEL_ID)
+                        ch = await bot.fetch_channel(TEXT_CHANNEL_ID)
                     embed = discord.Embed(title="🎙️ Joined", description=f"**{member.display_name}** joined **{after.channel.name}**", color=discord.Color.green())
                     await ch.send(embed=embed)
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Text fallback fail: {e}", flush=True)
 
         elif before.channel is not None and after.channel is None:
             text_bn = f"{member.display_name} voice theke leave nise"
-            print(f"   -> LEAVE: {text_bn}", flush=True)
+            print(f"   -> LEAVE: {text_bn} - Bot will STAY in VC, not leave", flush=True)
             vc = member.guild.voice_client
             if vc and vc.channel.id == before.channel.id:
-                await play_tts(member.guild, before.channel, text_bn, use_beep_fallback=True)
-                # Stay 5 MINUTES (300 sec) not 10 sec! So bot won't come and go
-                print(f"   -> Will stay 5 min in {before.channel.name} before leaving if empty", flush=True)
-                await asyncio.sleep(5)
-                # Check if only bot left
-                if len(before.channel.members) == 1:
-                    # Wait 5 min
-                    for i in range(60):  # 60 * 5 sec = 300 sec = 5 min
-                        await asyncio.sleep(5)
-                        if not vc or not vc.is_connected():
-                            break
-                        if len(before.channel.members) > 1:
-                            print(f"   -> Someone rejoined {before.channel.name}, staying", flush=True)
-                            break
-                        if i % 12 == 0:  # Every 60 sec
-                            print(f"   -> Still waiting in empty {before.channel.name}... {i*5}s", flush=True)
-                    # After 5 min, if still only bot, leave
-                    if vc and vc.is_connected() and len(before.channel.members) == 1:
-                        try:
-                            await vc.disconnect()
-                            print(f"   -> Left empty channel after 5 min: {before.channel.name}", flush=True)
-                        except:
-                            pass
-            
-            if NOTIFICATION_CHANNEL_ID:
+                await play_audio(member.guild, before.channel, text_bn, beep_only=False)
+                # NO AUTO LEAVE - Stay forever!
+                print(f"   -> Bot STAYING in {before.channel.name} (no auto-disconnect)", flush=True)
+
+            if TEXT_CHANNEL_ID:
                 try:
-                    ch = bot.get_channel(NOTIFICATION_CHANNEL_ID)
+                    ch = bot.get_channel(TEXT_CHANNEL_ID)
                     if not ch:
-                        ch = await bot.fetch_channel(NOTIFICATION_CHANNEL_ID)
+                        ch = await bot.fetch_channel(TEXT_CHANNEL_ID)
                     embed = discord.Embed(title="👋 Left", description=f"**{member.display_name}** left **{before.channel.name}**", color=discord.Color.red())
                     await ch.send(embed=embed)
                 except:
@@ -311,8 +266,8 @@ async def on_voice_state_update(member, before, after):
         elif before.channel and after.channel and before.channel.id != after.channel.id:
             text_bn = f"{member.display_name} {after.channel.name} e move korse"
             print(f"   -> MOVE: {text_bn}", flush=True)
-            await asyncio.sleep(0.8)
-            await play_tts(member.guild, after.channel, text_bn, use_beep_fallback=True)
+            await asyncio.sleep(0.5)
+            await play_audio(member.guild, after.channel, text_bn, beep_only=False)
 
     except Exception as e:
         print(f"❌ Voice event error: {e}", flush=True)
@@ -333,84 +288,78 @@ async def join_cmd(ctx):
         vc = ctx.guild.voice_client
         if vc:
             if vc.channel.id == ch.id:
-                await ctx.send(f"✅ Already in {ch.mention} | Connected: {vc.is_connected()}")
+                await ctx.send(f"✅ Already in {ch.mention} | Will STAY forever until !leave")
                 return
             await vc.move_to(ch)
-            await ctx.send(f"✅ Moved to {ch.mention}")
+            await ctx.send(f"✅ Moved to {ch.mention} | Will STAY forever")
         else:
             await ch.connect()
-            await ctx.send(f"✅ Joined {ch.mention}\nEkhon `!beep` diye test koro, tarpor `!testvoice`\nBot 5 min thakbe, instant leave korbe na!")
+            await ctx.send(f"✅ Joined {ch.mention}\n✅ Will STAY forever (no auto-disconnect)\nEkhon `!beep` then `!testvoice` koro")
     except Exception as e:
         await ctx.send(f"❌ Join fail: {e}")
         print(f"❌ Join fail: {e}", flush=True)
 
 @bot.command(name="beep")
 async def beep_cmd(ctx):
-    """Beep test - 100% works, no TTS, no internet"""
+    """Beep test - 100% works, no internet needed"""
     if not ctx.voice_client:
         if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
+            try:
+                await ctx.author.voice.channel.connect()
+            except Exception as e:
+                await ctx.send(f"❌ Join fail: {e}")
+                return
         else:
             await ctx.send("❌ Age !join")
             return
     
-    await ctx.send("🔔 Beep bajacchi... (Local file, 100% works)")
-    # Force beep only
-    try:
-        vc = ctx.voice_client
-        if vc.is_playing():
-            vc.stop()
-            await asyncio.sleep(0.3)
-        
-        if not os.path.exists(BEEP_FILE):
-            create_beep()
-        
-        if FFMPEG_EXE and os.path.exists(FFMPEG_EXE):
-            source = discord.FFmpegPCMAudio(BEEP_FILE, executable=FFMPEG_EXE, options='-vn -loglevel quiet')
-        else:
-            source = discord.FFmpegPCMAudio(BEEP_FILE, options='-vn -loglevel quiet')
-        
-        vc.play(source)
-        while vc.is_playing():
-            await asyncio.sleep(0.3)
-        
-        await ctx.send("✅ Beep bajse! Voice kaj kore! Ekhon `!testvoice` try koro TTS er jonno")
-    except Exception as e:
-        await ctx.send(f"❌ Beep fail: {e}\nFFmpeg: {FFMPEG_EXE}")
-        print(f"❌ Beep fail: {e}", flush=True)
+    await ctx.send("🔔 Beep bajacchi... (100% works, no TTS)")
+    success = await play_audio(ctx.guild, ctx.voice_client.channel, beep_only=True)
+    if success:
+        await ctx.send("✅ **Beep bajse!** Voice 100% kaj kore! Ekhon `!testvoice` koro TTS er jonno")
+    else:
+        await ctx.send(f"❌ Beep o fail! FFmpeg: {FFMPEG_EXE}")
 
 @bot.command(name="testvoice")
 async def testvoice_cmd(ctx):
     if not ctx.voice_client:
         if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
+            try:
+                await ctx.author.voice.channel.connect()
+            except Exception as e:
+                await ctx.send(f"❌ Join fail: {e}")
+                return
         else:
             await ctx.send("❌ Age VC te join koro, tarpor !join")
             return
     
     await ctx.send(f"🎙️ TTS test: '{ctx.author.display_name} voice e join korse'")
-    success = await play_tts(ctx.guild, ctx.voice_client.channel, f"{ctx.author.display_name} voice e join korse", use_beep_fallback=True)
+    success = await play_audio(ctx.guild, ctx.voice_client.channel, f"{ctx.author.display_name} voice e join korse", beep_only=False)
     if success:
-        await ctx.send("✅ TTS bajse! Ekhon auto join/leave te bolbe")
+        await ctx.send("✅ **TTS bajse!** Ekhon auto join/leave te bolbe + 5 min thakbe na, forever thakbe!")
     else:
-        await ctx.send("❌ TTS fail, kintu `!beep` kaj korle voice thik ache")
+        await ctx.send("❌ TTS fail, kintu `!beep` kaj korle `!say` diye try koro")
 
 @bot.command(name="say")
 async def say_cmd(ctx, *, text: str):
     if not ctx.voice_client:
         if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
+            try:
+                await ctx.author.voice.channel.connect()
+            except Exception as e:
+                await ctx.send(f"❌ Join fail: {e}")
+                return
         else:
             await ctx.send("❌ Age !join")
             return
     await ctx.send(f"🗣️ Bolchi: {text}")
-    await play_tts(ctx.guild, ctx.voice_client.channel, text, use_beep_fallback=True)
+    await play_audio(ctx.guild, ctx.voice_client.channel, text, beep_only=False)
 
 @bot.command(name="leave")
 async def leave_cmd(ctx):
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
-        await ctx.send("👋 Left")
+        await ctx.send("👋 Left VC (manual !leave)")
     else:
         await ctx.send("❌ VC te nai")
 
@@ -418,17 +367,17 @@ async def leave_cmd(ctx):
 async def debug_cmd(ctx):
     vc = ctx.voice_client
     await ctx.send(f"""
-**DEBUG**
+**FINAL DEBUG - No Auto Disconnect**
 Bot VC: {vc.channel.name if vc else 'None'} | Connected: {vc.is_connected() if vc else False}
-FFmpeg: {FFMPEG_EXE or 'NOT FOUND'} Exists: {os.path.exists(FFMPEG_EXE) if FFMPEG_EXE else False}
+FFmpeg: {FFMPEG_EXE or 'NOT FOUND'} | Exists: {os.path.exists(FFMPEG_EXE) if FFMPEG_EXE else False}
+Beep: {os.path.exists(BEEP_FILE)} | {os.path.getsize(BEEP_FILE) if os.path.exists(BEEP_FILE) else 0} bytes
 Opus: {discord.opus.is_loaded()}
-Beep: {os.path.exists(BEEP_FILE)} {os.path.getsize(BEEP_FILE) if os.path.exists(BEEP_FILE) else 0} bytes
-Stay time: 5 min (not instant)
+Stay: FOREVER until !leave (no auto-disconnect)
 """)
 
 @bot.command(name="ping")
 async def ping_cmd(ctx):
-    await ctx.send(f"🏓 {round(bot.latency*1000)}ms | FFmpeg: {bool(FFMPEG_EXE)}")
+    await ctx.send(f"🏓 {round(bot.latency*1000)}ms | FFmpeg: {bool(FFMPEG_EXE)} | VC: {bool(ctx.voice_client)}")
 
 @bot.event
 async def on_message(message):
@@ -437,5 +386,5 @@ async def on_message(message):
     await bot.process_commands(message)
 
 if __name__ == "__main__":
-    print("🚀 Starting TTS Bot - 5 min stay + Beep fallback...", flush=True)
+    print("🚀 Starting FINAL TTS Bot - NO AUTO-DISCONNECT, Beep+TTS...", flush=True)
     bot.run(TOKEN)
