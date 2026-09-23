@@ -4,11 +4,7 @@ services:
     runtime: python
     plan: free
     region: singapore
-    buildCommand: |
-      apt-get update -y
-      apt-get install -y ffmpeg libopus0 libopus-dev
-      ffmpeg -version
-      pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     healthCheckPath: /health
     autoDeploy: true
