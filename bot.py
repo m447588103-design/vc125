@@ -1,6 +1,6 @@
 """
-DEBUG VERSION - Voice connection test without TTS
-To check if Render supports voice at all
+FINAL FIX - VC Join Issue + Text Fallback
+Bot VC te join na nile text e bolbe + permission check
 """
 
 import os
@@ -17,61 +17,42 @@ load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 PORT = int(os.getenv('PORT', 10000))
-NOTIFICATION_CHANNEL_ID = os.getenv('NOTIFICATION_CHANNEL_ID')  # Optional fallback text channel
+NOTIFICATION_CHANNEL_ID = os.getenv('NOTIFICATION_CHANNEL_ID')
 if NOTIFICATION_CHANNEL_ID:
     try:
         NOTIFICATION_CHANNEL_ID = int(NOTIFICATION_CHANNEL_ID)
     except:
         NOTIFICATION_CHANNEL_ID = None
-else:
-    NOTIFICATION_CHANNEL_ID = None
 
-print(f"🔧 CONFIG: TOKEN={bool(TOKEN)} | PORT={PORT} | TEXT_CHANNEL={NOTIFICATION_CHANNEL_ID}", flush=True)
+print(f"🔧 CONFIG: TOKEN={bool(TOKEN)} | PORT={PORT} | TEXT_CH={NOTIFICATION_CHANNEL_ID}", flush=True)
 
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN missing!")
 
-# Check FFmpeg and Opus
-print("🔍 Checking FFmpeg & Opus...", flush=True)
+# Check deps
+print("🔍 Checking deps...", flush=True)
 ffmpeg_path = shutil.which("ffmpeg")
-print(f"FFmpeg path: {ffmpeg_path}", flush=True)
-if ffmpeg_path:
-    try:
-        r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
-        print(f"✅ FFmpeg: {r.stdout.splitlines()[0]}", flush=True)
-    except Exception as e:
-        print(f"⚠️ FFmpeg check fail: {e}", flush=True)
-else:
-    print("❌ FFmpeg NOT FOUND!", flush=True)
-
+print(f"FFmpeg: {ffmpeg_path}", flush=True)
 try:
     import nacl
-    print(f"✅ PyNaCl installed: {nacl.__version__}", flush=True)
+    print(f"✅ PyNaCl: {nacl.__version__}", flush=True)
 except Exception as e:
     print(f"❌ PyNaCl missing: {e}", flush=True)
 
-# Check opus
+# Opus
 try:
-    if discord.opus.is_loaded():
-        print("✅ Opus already loaded", flush=True)
-    else:
-        # Try to load
-        try:
-            discord.opus.load_opus('libopus.so.0')
-            print("✅ Opus loaded via libopus.so.0", flush=True)
-        except:
+    if not discord.opus.is_loaded():
+        # Try common opus lib names on Render (Ubuntu)
+        for lib in ['libopus.so.0', 'libopus.so', 'libopus.so.1', 'opus']:
             try:
-                discord.opus.load_opus('libopus.so')
-                print("✅ Opus loaded via libopus.so", flush=True)
-            except Exception as e:
-                print(f"⚠️ Opus not loaded, will try auto: {e}", flush=True)
-                # Try auto
-                if not discord.opus.is_loaded():
-                    print("❌ Opus NOT loaded - voice may fail!", flush=True)
-                else:
-                    print("✅ Opus auto-loaded", flush=True)
+                discord.opus.load_opus(lib)
+                print(f"✅ Opus loaded: {lib}", flush=True)
+                break
+            except:
+                continue
+    print(f"Opus loaded: {discord.opus.is_loaded()}", flush=True)
 except Exception as e:
-    print(f"⚠️ Opus check error: {e}", flush=True)
+    print(f"⚠️ Opus check: {e}", flush=True)
 
 # Web server
 class Handler(BaseHTTPRequestHandler):
@@ -80,9 +61,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         if self.path == '/health':
-            self.wfile.write(b'OK - Debug Voice Bot')
+            self.wfile.write(b'OK')
         else:
-            self.wfile.write(f"Debug Voice Bot | FFmpeg: {bool(ffmpeg_path)} | Opus: {discord.opus.is_loaded()}".encode())
+            self.wfile.write(f"Bot Alive | FFmpeg: {bool(ffmpeg_path)} | Opus: {discord.opus.is_loaded()}".encode())
     def log_message(self, format, *args):
         return
 
@@ -108,141 +89,184 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 @bot.event
 async def on_ready():
-    print(f"\n{'='*60}\n🐺 DEBUG VOICE BOT ONLINE! {bot.user}\nFFmpeg: {ffmpeg_path} | Opus loaded: {discord.opus.is_loaded()}\n{'='*60}\n", flush=True)
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="Debug Mode | !join"))
+    print(f"\n{'='*60}\n🐺 BOT ONLINE! {bot.user}\nFFmpeg: {ffmpeg_path} | Opus: {discord.opus.is_loaded()} | Guilds: {len(bot.guilds)}\n{'='*60}\n", flush=True)
+    for g in bot.guilds:
+        print(f" - {g.name} ({g.id}) | Members: {g.member_count}", flush=True)
+        # Check bot permissions in guild
+        me = g.me
+        print(f"   Bot perms: {me.guild_permissions}", flush=True)
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="!join | !help"))
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # Log ALL voice events including bot's own
-    print(f"[VOICE] {member.display_name} (bot={member.bot}) | {before.channel} -> {after.channel} | Guild: {member.guild.name}", flush=True)
+    print(f"[VOICE] {member.display_name} bot={member.bot} | {before.channel} -> {after.channel} | {member.guild.name}", flush=True)
     
     if member.id == bot.user.id:
-        # Bot's own voice state changed
         if before.channel is None and after.channel is not None:
             print(f"   🤖 BOT JOINED {after.channel.name}", flush=True)
         elif before.channel is not None and after.channel is None:
-            print(f"   🤖 BOT LEFT/DISCONNECTED from {before.channel.name} | Reason: {after}", flush=True)
-            # Log why disconnected
-            if after.channel is None:
-                print(f"   ⚠️ Bot was disconnected! Check if Render blocks UDP or voice", flush=True)
-        elif before.channel and after.channel and before.channel.id != after.channel.id:
-            print(f"   🤖 BOT MOVED {before.channel.name} -> {after.channel.name}", flush=True)
+            print(f"   🤖 BOT LEFT {before.channel.name}", flush=True)
         return
-
+    
     if member.bot:
         return
 
-    # For normal users - just log, and if bot in VC, try to announce via TEXT as fallback
-    if before.channel is None and after.channel is not None:
-        print(f"   -> USER JOIN: {member.display_name} -> {after.channel.name}", flush=True)
-        # Fallback text notification if voice fails
-        if NOTIFICATION_CHANNEL_ID:
-            try:
-                ch = bot.get_channel(NOTIFICATION_CHANNEL_ID)
-                if not ch:
-                    ch = await bot.fetch_channel(NOTIFICATION_CHANNEL_ID)
-                if ch:
-                    await ch.send(f"🎙️ **{member.display_name}** joined **{after.channel.name}** (Voice debug mode - text fallback)")
-            except Exception as e:
-                print(f"   -> Text fallback fail: {e}", flush=True)
-
-    elif before.channel is not None and after.channel is None:
-        print(f"   -> USER LEAVE: {member.display_name} <- {before.channel.name}", flush=True)
-        if NOTIFICATION_CHANNEL_ID:
-            try:
-                ch = bot.get_channel(NOTIFICATION_CHANNEL_ID)
-                if not ch:
-                    ch = await bot.fetch_channel(NOTIFICATION_CHANNEL_ID)
-                if ch:
-                    await ch.send(f"👋 **{member.display_name}** left **{before.channel.name}**")
-            except:
-                pass
+    # Text fallback - always send text if NOTIFICATION_CHANNEL_ID set
+    if NOTIFICATION_CHANNEL_ID:
+        try:
+            ch = bot.get_channel(NOTIFICATION_CHANNEL_ID)
+            if not ch:
+                ch = await bot.fetch_channel(NOTIFICATION_CHANNEL_ID)
+            
+            if before.channel is None and after.channel is not None:
+                embed = discord.Embed(title="🎙️ Voice Join", description=f"**{member.display_name}** joined **{after.channel.name}**", color=discord.Color.green())
+                embed.add_field(name="Member", value=member.mention, inline=True)
+                embed.add_field(name="Channel", value=after.channel.mention, inline=True)
+                await ch.send(embed=embed)
+                print(f"   -> Text notification sent to #{ch.name}", flush=True)
+            elif before.channel is not None and after.channel is None:
+                embed = discord.Embed(title="👋 Voice Leave", description=f"**{member.display_name}** left **{before.channel.name}**", color=discord.Color.red())
+                await ch.send(embed=embed)
+            elif before.channel and after.channel and before.channel.id != after.channel.id:
+                embed = discord.Embed(title="🔄 Voice Move", description=f"**{member.display_name}** moved {before.channel.name} -> {after.channel.name}", color=discord.Color.blue())
+                await ch.send(embed=embed)
+        except Exception as e:
+            print(f"   -> Text fallback error: {e}", flush=True)
 
 @bot.command(name="join")
 async def join_cmd(ctx):
-    """Debug join - just join, no TTS"""
+    """VC te join with full permission check"""
+    print(f"\n🔊 !join by {ctx.author} in {ctx.guild.name}", flush=True)
+    
     if not ctx.author.voice:
-        await ctx.send("❌ Age VC te join koro!")
+        await ctx.send("❌ Tumi kono VC te nai! Age ekta voice channel e join koro, tarpor `!join` likho")
         return
     
-    ch = ctx.author.voice.channel
-    print(f"🔊 !join requested -> {ch.name} by {ctx.author}", flush=True)
+    vc_channel = ctx.author.voice.channel
+    print(f"   Target VC: {vc_channel.name} ({vc_channel.id})", flush=True)
+    
+    # Permission check
+    perms = vc_channel.permissions_for(ctx.guild.me)
+    print(f"   Bot perms in {vc_channel.name}: Connect={perms.connect} Speak={perms.speak} View={perms.view_channel} UseVoice={perms.use_voice_activation}", flush=True)
+    
+    if not perms.view_channel:
+        await ctx.send(f"❌ Amar {vc_channel.mention} dekhar permission nai! Channel Settings > Permissions > Bot ke View Channel dao")
+        return
+    if not perms.connect:
+        await ctx.send(f"❌ Amar {vc_channel.mention} e Connect er permission nai! Permissions e Connect ON koro")
+        return
+    if not perms.speak:
+        await ctx.send(f"❌ Amar {vc_channel.mention} e Speak er permission nai! Permissions e Speak ON koro")
+        return
+    
+    # Check Opus and FFmpeg
+    if not discord.opus.is_loaded():
+        await ctx.send("❌ Opus not loaded! Voice kaj korbe na. Render log e Opus error dekho")
+        print("❌ Opus not loaded, cannot join VC", flush=True)
+        return
+    
+    if not ffmpeg_path:
+        await ctx.send("⚠️ FFmpeg not found, but trying to join anyway... Voice e kotha bolte parbo na, but join hobo")
     
     try:
-        vc = ctx.voice_client
-        if vc:
-            if vc.channel.id == ch.id:
-                await ctx.send(f"✅ Already in {ch.mention} | Connected: {vc.is_connected()} | Opus: {discord.opus.is_loaded()} | FFmpeg: {bool(ffmpeg_path)}")
+        existing_vc = ctx.voice_client
+        if existing_vc:
+            if existing_vc.channel.id == vc_channel.id:
+                await ctx.send(f"✅ Already in {vc_channel.mention} | Connected: {existing_vc.is_connected()}")
+                print(f"   Already in {vc_channel.name}", flush=True)
                 return
             else:
-                print(f"🔄 Moving to {ch.name}", flush=True)
-                await vc.move_to(ch)
-                await ctx.send(f"✅ Moved to {ch.mention}")
+                print(f"   Moving from {existing_vc.channel.name} to {vc_channel.name}", flush=True)
+                await existing_vc.move_to(vc_channel)
+                await ctx.send(f"✅ Moved to {vc_channel.mention}")
                 return
         else:
-            print(f"🔊 Connecting to {ch.name}...", flush=True)
-            vc = await ch.connect(timeout=15, self_deaf=False, self_mute=False, self_stream=False)
-            print(f"✅ Connected to {ch.name} | VC: {vc} | Connected: {vc.is_connected()}", flush=True)
-            await ctx.send(f"✅ Joined {ch.mention}\nConnected: {vc.is_connected()}\nOpus: {discord.opus.is_loaded()}\nFFmpeg: {ffmpeg_path}\n\nEkhon 60 sec wait koro, disconnect hoy kina dekho. Jodi disconnect na hoy, tahole voice support kore. Jodi disconnect hoy, Render voice block kore.")
+            print(f"   Connecting to {vc_channel.name}...", flush=True)
+            # Try with timeout and no self deaf/mute
+            vc = await vc_channel.connect(timeout=15, self_deaf=False)
+            print(f"✅ Connected! VC: {vc} | Channel: {vc.channel.name} | Connected: {vc.is_connected()}", flush=True)
+            await ctx.send(f"✅ **Joined {vc_channel.mention}**\nConnected: {vc.is_connected()}\nFFmpeg: {ffmpeg_path}\nOpus: {discord.opus.is_loaded()}\n\nEkhon kew VC te join/leave korle text e notification jabe. Voice TTS er jonno `!testvoice` try koro (jodi FFmpeg thake)")
             
-            # Monitor connection for 60s
-            for i in range(12):
-                await asyncio.sleep(5)
-                if not ctx.voice_client or not ctx.voice_client.is_connected():
-                    print(f"❌ VC disconnected after {i*5}s!", flush=True)
-                    await ctx.send(f"❌ Bot disconnected after {i*5} seconds! Render may block voice UDP.")
-                    return
-                print(f"   -> Still connected after {i*5}s | Channel: {ctx.voice_client.channel.name}", flush=True)
+            # Keep alive check
+            await asyncio.sleep(2)
+            if not ctx.voice_client or not ctx.voice_client.is_connected():
+                await ctx.send("❌ Bot 2 sec er moddhe disconnect hoye gese! Render voice UDP block korte pare. Text notification kaj korbe.")
+                print("❌ Disconnected quickly after join", flush=True)
             
-            await ctx.send("✅ Bot stayed 60s without disconnect! Voice works on Render, TTS issue chilo. Ebar TTS version e jabo.")
-            
+    except discord.errors.ClientException as e:
+        print(f"❌ ClientException: {e}", flush=True)
+        await ctx.send(f"❌ Join failed (ClientException): {e}\nAmi hoyto already onno VC te achi. `!leave` diye ber hoye abar `!join` koro")
+    except discord.errors.Forbidden as e:
+        print(f"❌ Forbidden: {e}", flush=True)
+        await ctx.send(f"❌ Forbidden: {e}\nPermission nai!")
     except Exception as e:
-        print(f"❌ Join failed: {e}", flush=True)
+        print(f"❌ Join error: {e}", flush=True)
         import traceback
         traceback.print_exc()
-        await ctx.send(f"❌ Join failed: {e}\nFFmpeg: {ffmpeg_path}\nOpus: {discord.opus.is_loaded()}")
+        await ctx.send(f"❌ Join failed: {e}\nCheck Render logs for details\nFFmpeg: {ffmpeg_path}\nOpus: {discord.opus.is_loaded()}")
 
 @bot.command(name="leave")
 async def leave_cmd(ctx):
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
-        await ctx.send("👋 Left")
+        await ctx.send("👋 Left VC")
     else:
-        await ctx.send("❌ Not in VC")
+        await ctx.send("❌ VC te nai")
 
-@bot.command(name="debugvoice")
-async def debugvoice_cmd(ctx):
+@bot.command(name="debug")
+async def debug_cmd(ctx):
     vc = ctx.voice_client
-    embed = discord.Embed(title="🔍 Voice Debug", color=discord.Color.blue())
-    embed.add_field(name="FFmpeg", value=f"{ffmpeg_path or 'NOT FOUND'}", inline=False)
-    embed.add_field(name="Opus Loaded", value=f"{discord.opus.is_loaded()}", inline=True)
-    embed.add_field(name="PyNaCl", value="Installed" if 'nacl' in globals() else "Check logs", inline=True)
-    embed.add_field(name="Voice Client", value=f"{vc.channel.name if vc else 'None'} | Connected: {vc.is_connected() if vc else False}", inline=False)
-    embed.add_field(name="User VC", value=f"{ctx.author.voice.channel.name if ctx.author.voice else 'Not in VC'}", inline=False)
-    embed.add_field(name="Render Voice", value="Render Free Web Service may block UDP. If bot disconnects instantly, use Railway.app or VPS", inline=False)
-    await ctx.send(embed=embed)
+    user_vc = ctx.author.voice.channel if ctx.author.voice else None
+    
+    # Perms check
+    if user_vc:
+        perms = user_vc.permissions_for(ctx.guild.me)
+        perm_text = f"View={perms.view_channel} Connect={perms.connect} Speak={perms.speak}"
+    else:
+        perm_text = "User not in VC"
+    
+    msg = f"""
+**🔍 DEBUG**
+**Guild:** {ctx.guild.name}
+**You in VC:** {user_vc.name if user_vc else 'No'}
+**Bot in VC:** {vc.channel.name if vc else 'No'} | Connected: {vc.is_connected() if vc else False}
+**Bot Perms in your VC:** {perm_text}
+**FFmpeg:** {ffmpeg_path or 'NOT FOUND'}
+**Opus Loaded:** {discord.opus.is_loaded()}
+**PyNaCl:** Installed
+**Text Channel ID:** {NOTIFICATION_CHANNEL_ID}
+**Latency:** {round(bot.latency*1000)}ms
+"""
+    await ctx.send(msg)
+    print(msg, flush=True)
 
-@bot.command(name="testtts")
-async def testtts_cmd(ctx):
-    """Test gTTS without playing in VC - just generate file"""
-    await ctx.send("🔍 Testing gTTS generation...")
+@bot.command(name="testtext")
+async def testtext_cmd(ctx):
+    """Test text notification"""
+    if not NOTIFICATION_CHANNEL_ID:
+        await ctx.send("❌ NOTIFICATION_CHANNEL_ID env set koro Render e, text notification er jonno")
+        return
     try:
-        from gtts import gTTS
-        import uuid, os
-        filename = f"/tmp/test_{uuid.uuid4().hex}.mp3"
-        tts = gTTS(text="Hello, this is a test", lang='en', slow=False)
-        tts.save(filename)
-        size = os.path.getsize(filename)
-        await ctx.send(f"✅ gTTS OK! File: {filename} Size: {size} bytes | FFmpeg: {ffmpeg_path}")
-        os.remove(filename)
+        ch = bot.get_channel(NOTIFICATION_CHANNEL_ID)
+        if not ch:
+            ch = await bot.fetch_channel(NOTIFICATION_CHANNEL_ID)
+        embed = discord.Embed(title="✅ Test Text", description=f"Test by {ctx.author.mention}", color=discord.Color.green())
+        await ch.send(embed=embed)
+        await ctx.send(f"✅ Sent to {ch.mention}")
     except Exception as e:
-        await ctx.send(f"❌ gTTS failed: {e}")
-        import traceback
-        traceback.print_exc()
+        await ctx.send(f"❌ {e}")
 
 @bot.command(name="ping")
 async def ping(ctx):
-    await ctx.send(f"🏓 {round(bot.latency*1000)}ms | FFmpeg: {bool(ffmpeg_path)} | Opus: {discord.opus.is_loaded()}")
+    await ctx.send(f"🏓 {round(bot.latency*1000)}ms | FFmpeg: {bool(ffmpeg_path)} | Opus: {discord.opus.is_loaded()} | VC: {bool(ctx.voice_client)}")
+
+@bot.command(name="help")
+async def help_cmd(ctx):
+    embed = discord.Embed(title="🐺 WHITE_WOLF Bot - Help", color=discord.Color.gold())
+    embed.add_field(name="Voice (Debug)", value="`!join` - VC te join\n`!leave` - Leave\n`!debug` - Full debug", inline=False)
+    embed.add_field(name="Text Notification", value="`!testtext` - Text channel e test\nAuto: Join/Leave/Move text e bolbe (jodi NOTIFICATION_CHANNEL_ID set thake)", inline=False)
+    embed.add_field(name="Fix for VC not joining", value="1. Bot role ke Connect+Speak dao\n2. Channel e bot ke View+Connect+Speak dao\n3. `!debug` e perms check koro", inline=False)
+    await ctx.send(embed=embed)
 
 @bot.event
 async def on_message(message):
@@ -251,5 +275,5 @@ async def on_message(message):
     await bot.process_commands(message)
 
 if __name__ == "__main__":
-    print("🚀 Starting DEBUG Voice Bot...", flush=True)
+    print("🚀 Starting Bot - VC Join Fix + Text Fallback...", flush=True)
     bot.run(TOKEN)
