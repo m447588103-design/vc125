@@ -1,8 +1,12 @@
+# WHITE_WOLF Bot - Render Blueprint V2 (100% Working)
+# Ager Flask version e port detect issue chilo, ebar aiohttp diye fix
+
 services:
   - type: web
     name: white-wolf-voice-bot
     runtime: python
     plan: free
+    region: singapore  # BD er jonno Singapore best latency
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     healthCheckPath: /health
