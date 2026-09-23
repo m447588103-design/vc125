@@ -12,8 +12,10 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 NOTIFICATION_CHANNEL_ID_RAW = os.getenv('NOTIFICATION_CHANNEL_ID')
 PORT = int(os.getenv('PORT', 10000))
 
+print(f"🔧 ENV CHECK: TOKEN exists? {bool(TOKEN)} | CHANNEL_ID raw: {NOTIFICATION_CHANNEL_ID_RAW} | PORT: {PORT}")
+
 if not TOKEN:
-    raise ValueError('❌ DISCORD_TOKEN missing! Render Dashboard > Environment e add koro.')
+    raise ValueError('❌ DISCORD_TOKEN missing!')
 
 try:
     NOTIFICATION_CHANNEL_ID = int(NOTIFICATION_CHANNEL_ID_RAW) if NOTIFICATION_CHANNEL_ID_RAW else 0
@@ -23,7 +25,7 @@ except ValueError:
 if NOTIFICATION_CHANNEL_ID == 0:
     raise ValueError('❌ NOTIFICATION_CHANNEL_ID missing!')
 
-# --- Flask Keep-Alive ---
+# --- Flask Keep-Alive (Render Web Service) ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -35,20 +37,24 @@ def health():
     return "OK", 200
 
 def run_flask():
-    # use_reloader=False important, naile Render e 2 bar start hoy
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    try:
+        print(f"🌐 Starting Flask on 0.0.0.0:{PORT}")
+        app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    except Exception as e:
+        print(f"❌ Flask failed: {e}")
 
-threading.Thread(target=run_flask, daemon=True).start()
-print(f"🌐 Keep-alive server started on port {PORT}")
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
+print(f"🌐 Keep-alive thread started")
 
 # --- Discord ---
 logging.basicConfig(level=logging.INFO)
 
 intents = discord.Intents.default()
 intents.guilds = True
-intents.members = True  # Portal e ON korte hobe
+intents.members = True
 intents.voice_states = True
-intents.message_content = True  # !test command er jonno
+intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
@@ -56,40 +62,52 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 async def on_ready():
     print('===================================')
     print('🐺 WHITE_WOLF Voice Bot Online')
-    print(f'🤖 Logged in as: {bot.user} (ID: {bot.user.id})')
-    print(f'🔔 Notification Channel ID: {NOTIFICATION_CHANNEL_ID}')
-    print(f'🌐 Servers: {len(bot.guilds)}')
+    print(f'🤖 {bot.user} (ID: {bot.user.id})')
+    print(f'🔔 Target Channel ID: {NOTIFICATION_CHANNEL_ID}')
+    print(f'🌐 Guilds: {len(bot.guilds)}')
     for guild in bot.guilds:
-        print(f'   - {guild.name} ({guild.id})')
-        # Check if notification channel exists in this guild
+        print(f'   - {guild.name} ({guild.id}) | Members: {guild.member_count}')
+        # Try to find notification channel
         ch = guild.get_channel(NOTIFICATION_CHANNEL_ID)
         if ch:
-            print(f'      ✅ Found notification channel in this guild: #{ch.name}')
-        # List all text channels for debugging
-        text_channels = [f"{c.name} ({c.id})" for c in guild.text_channels[:10]]
-        print(f'      Text channels: {", ".join(text_channels)}')
+            print(f'      ✅ FOUND notification channel here: #{ch.name} ({ch.id}) Type: {ch.type}')
+            # Check permissions
+            perms = ch.permissions_for(guild.me)
+            print(f'      Permissions: View={perms.view_channel} Send={perms.send_messages} Embed={perms.embed_links}')
+        else:
+            print(f'      ❌ Channel {NOTIFICATION_CHANNEL_ID} NOT in this guild')
 
     print('===================================')
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name='WHITE_WOLF GLOBAL 🐺'))
 
-    # Try to send online message on startup to confirm permissions
+    # STARTUP TEST
+    print("📨 Trying to send startup message...")
     try:
         channel = bot.get_channel(NOTIFICATION_CHANNEL_ID)
         if channel is None:
+            print("   -> get_channel returned None, trying fetch_channel...")
             channel = await bot.fetch_channel(NOTIFICATION_CHANNEL_ID)
         
-        if channel:
-            print(f"✅ Notification channel found: #{channel.name} in {channel.guild.name}")
-            embed = discord.Embed(
-                title='🟢 Bot Online',
-                description='Voice notification system is now active! 🐺',
-                color=discord.Color.gold()
-            )
-            embed.set_footer(text='If you see this, notification channel is correct ✅')
-            await channel.send(embed=embed)
-            print("✅ Startup test message sent!")
-        else:
-            print(f"❌ Could not find notification channel ID: {NOTIFICATION_CHANNEL_ID}")
+        print(f"   -> Channel object: {channel} | Guild: {channel.guild.name if hasattr(channel, 'guild') else 'N/A'}")
+        
+        # Try plain text first (embed permission er jonno fail hote pare)
+        await channel.send("🟢 **WHITE_WOLF Bot Online!** Voice log active. Jodi eta dekho tahole channel thik ache ✅")
+        print("✅ Startup plain text sent!")
+        
+        embed = discord.Embed(
+            title='🟢 Bot Online - Embed Test',
+            description='Voice notification system active! 🐺\nEmbed kaj korle eta dekhba.',
+            color=discord.Color.gold()
+        )
+        await channel.send(embed=embed)
+        print("✅ Startup embed sent!")
+        
+    except discord.Forbidden as e:
+        print(f"❌ FORBIDDEN: Bot er permission nai! {e}")
+        print("   -> Channel Settings > Permissions > Bot ke View, Send Messages, Embed Links dao")
+    except discord.NotFound as e:
+        print(f"❌ NOT FOUND: Channel ID vul! {e}")
+        print(f"   -> {NOTIFICATION_CHANNEL_ID} ei ID er channel exist kore na ba bot oi server e nai")
     except Exception as e:
         print(f"❌ Failed to send startup message: {e}")
         import traceback
@@ -97,127 +115,130 @@ async def on_ready():
 
 @bot.command(name='ping')
 async def ping_cmd(ctx):
-    await ctx.send(f'🏓 Pong! {round(bot.latency*1000)}ms | Bot is alive 🐺')
+    await ctx.send(f'🏓 Pong! {round(bot.latency*1000)}ms')
 
 @bot.command(name='test')
 async def test_cmd(ctx):
-    """Notification channel e test embed pathabe"""
+    print(f"[CMD] !test by {ctx.author} in #{ctx.channel.name}")
     try:
         channel = bot.get_channel(NOTIFICATION_CHANNEL_ID)
         if channel is None:
             channel = await bot.fetch_channel(NOTIFICATION_CHANNEL_ID)
         
-        embed = discord.Embed(
-            title='✅ Test Notification',
-            description=f'Test triggered by {ctx.author.mention}\nIf you see this, channel ID is correct!',
-            color=discord.Color.green()
-        )
-        embed.add_field(name='Channel ID', value=f'`{NOTIFICATION_CHANNEL_ID}`', inline=True)
-        embed.add_field(name='Test Channel', value=channel.mention, inline=True)
+        await ctx.send(f"🔍 Trying to send to {channel.mention} ({channel.id}) in {channel.guild.name}...")
+        await channel.send(f"✅ Test from {ctx.author.mention} - Plain text works!")
+        
+        embed = discord.Embed(title='✅ Test Embed', description=f'Triggered by {ctx.author.mention}', color=discord.Color.green())
         await channel.send(embed=embed)
-        await ctx.send(f"✅ Test sent to {channel.mention}")
+        await ctx.send(f"✅ Sent to {channel.mention}")
+        print("✅ !test success")
     except Exception as e:
         await ctx.send(f"❌ Test failed: {e}")
-        print(f"Test failed: {e}")
+        print(f"❌ !test failed: {e}")
         import traceback
         traceback.print_exc()
 
 @bot.command(name='debug')
 async def debug_cmd(ctx):
+    ch = ctx.guild.get_channel(NOTIFICATION_CHANNEL_ID)
+    bot_ch = bot.get_channel(NOTIFICATION_CHANNEL_ID)
     info = f"""
-**Debug Info**
-Bot: {bot.user} ({bot.user.id})
+**DEBUG**
 Guild: {ctx.guild.name} ({ctx.guild.id})
-Notification ID from ENV: `{NOTIFICATION_CHANNEL_ID}`
-Current Channel: {ctx.channel.mention} ({ctx.channel.id})
-Members Intent: {bot.intents.members}
-Voice States Intent: {bot.intents.voice_states}
-Guilds: {len(bot.guilds)}
+This Channel: {ctx.channel.name} ({ctx.channel.id})
+ENV Channel ID: `{NOTIFICATION_CHANNEL_ID}`
+guild.get_channel: {ch} ({ch.name if ch else 'None'})
+bot.get_channel: {bot_ch} ({bot_ch.name if bot_ch else 'None'})
+Bot perms in this channel: View={ctx.channel.permissions_for(ctx.guild.me).view_channel} Send={ctx.channel.permissions_for(ctx.guild.me).send_messages} Embed={ctx.channel.permissions_for(ctx.guild.me).embed_links}
+Intents: members={bot.intents.members} voice_states={bot.intents.voice_states} message_content={bot.intents.message_content}
 """
     await ctx.send(info)
+    print(info)
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # DEBUG LOG - protibar voice state change hole log e dekhabe
-    print(f"[VOICE EVENT] {member.display_name} ({member.id}) | Before: {before.channel} | After: {after.channel} | Bot? {member.bot}")
+    print(f"\n[VOICE] {member.display_name} ({member.id}) | {before.channel} -> {after.channel} | bot={member.bot} | guild={member.guild.name}")
 
     if member.bot:
-        print(f"   -> Ignored (bot)")
+        print("   -> Skip bot")
         return
 
-    # Original logic er moto member.guild.get_channel use korbo (most reliable)
+    # Find notification channel - try guild first
     channel = member.guild.get_channel(NOTIFICATION_CHANNEL_ID)
+    source = "guild.get_channel"
     if channel is None:
         channel = bot.get_channel(NOTIFICATION_CHANNEL_ID)
+        source = "bot.get_channel"
     if channel is None:
         try:
             channel = await bot.fetch_channel(NOTIFICATION_CHANNEL_ID)
-            print(f"   -> Fetched channel via API: {channel}")
+            source = "fetch_channel"
         except Exception as e:
-            print(f'❌ Notification channel not found! ID: {NOTIFICATION_CHANNEL_ID} Error: {e}')
+            print(f"❌ Channel fetch failed: {e}")
             return
 
     if channel is None:
-        print(f"❌ Still no channel found for ID {NOTIFICATION_CHANNEL_ID} in guild {member.guild.name}")
+        print(f"❌ No channel for ID {NOTIFICATION_CHANNEL_ID}")
         return
 
-    print(f"   -> Will send notification to #{channel.name}")
+    print(f"   -> Target: #{channel.name} via {source} | Guild: {channel.guild.name}")
+
+    # Avatar safe
+    try:
+        avatar_url = member.display_avatar.url
+    except:
+        avatar_url = None
 
     try:
         if before.channel is None and after.channel is not None:
-            # JOINED
-            print(f"   -> JOIN event")
-            embed = discord.Embed(
-                title='🎙️ Voice Channel Joined',
-                description=f'**{member.display_name}** just joined the voice channel!',
-                color=discord.Color.green()
-            )
-            embed.add_field(name='👤 Member', value=member.mention, inline=True)
-            embed.add_field(name='🔊 Channel', value=after.channel.mention, inline=True)
-            embed.set_thumbnail(url=member.display_avatar.url)
-            embed.set_footer(text='🐺 WHITE_WOLF GLOBAL • ⚡ Made with Joy')
+            print("   -> EVENT: JOIN")
+            embed = discord.Embed(title='🎙️ Voice Joined', description=f'**{member.display_name}** joined {after.channel.mention}', color=discord.Color.green())
+            embed.add_field(name='Member', value=member.mention, inline=True)
+            embed.add_field(name='Channel', value=after.channel.mention, inline=True)
+            if avatar_url:
+                embed.set_thumbnail(url=avatar_url)
             await channel.send(embed=embed)
-            print(f"   -> ✅ Join notification sent")
+            print("   -> ✅ Sent")
 
         elif before.channel is not None and after.channel is None:
-            # LEFT
-            print(f"   -> LEAVE event")
-            embed = discord.Embed(
-                title='👋 Voice Channel Left',
-                description=f'**{member.display_name}** left the voice channel.',
-                color=discord.Color.red()
-            )
-            embed.add_field(name='👤 Member', value=member.mention, inline=True)
-            embed.add_field(name='🔊 Channel', value=before.channel.mention, inline=True)
-            embed.set_thumbnail(url=member.display_avatar.url)
-            embed.set_footer(text='🐺 WHITE_WOLF GLOBAL • ⚡ Made with Joy')
+            print("   -> EVENT: LEAVE")
+            embed = discord.Embed(title='👋 Voice Left', description=f'**{member.display_name}** left {before.channel.mention}', color=discord.Color.red())
+            embed.add_field(name='Member', value=member.mention, inline=True)
+            embed.add_field(name='Channel', value=before.channel.mention, inline=True)
+            if avatar_url:
+                embed.set_thumbnail(url=avatar_url)
             await channel.send(embed=embed)
-            print(f"   -> ✅ Leave notification sent")
+            print("   -> ✅ Sent")
 
-        elif before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
-            # MOVED
-            print(f"   -> MOVE event {before.channel} -> {after.channel}")
-            embed = discord.Embed(
-                title='🔄 Voice Channel Moved',
-                description=f'**{member.display_name}** moved to another voice channel.',
-                color=discord.Color.blue()
-            )
-            embed.add_field(name='👤 Member', value=member.mention, inline=False)
-            embed.add_field(name='⬅️ From', value=before.channel.mention, inline=True)
-            embed.add_field(name='➡️ To', value=after.channel.mention, inline=True)
-            embed.set_thumbnail(url=member.display_avatar.url)
-            embed.set_footer(text='🐺 WHITE_WOLF GLOBAL • ⚡ Made with Joy')
+        elif before.channel and after.channel and before.channel.id != after.channel.id:
+            print(f"   -> EVENT: MOVE {before.channel.name} -> {after.channel.name}")
+            embed = discord.Embed(title='🔄 Voice Moved', description=f'**{member.display_name}** moved', color=discord.Color.blue())
+            embed.add_field(name='From', value=before.channel.mention, inline=True)
+            embed.add_field(name='To', value=after.channel.mention, inline=True)
+            if avatar_url:
+                embed.set_thumbnail(url=avatar_url)
             await channel.send(embed=embed)
-            print(f"   -> ✅ Move notification sent")
+            print("   -> ✅ Sent")
         else:
-            print(f"   -> No action (mute/deafen etc)")
+            print("   -> Ignored (mute/deafen)")
 
     except discord.Forbidden as e:
-        print(f"❌ FORBIDDEN - Bot er permission nai #{channel.name} e message pathanor! Error: {e}")
+        print(f"❌ FORBIDDEN in #{channel.name}: {e}")
+        try:
+            await channel.send(f"❌ Ami {after.channel.mention if after.channel else before.channel.mention} er log pathate parchi na, permission nai! {member.mention} joined/left.")
+        except:
+            pass
     except Exception as e:
-        print(f"⚠️ Error in on_voice_state_update: {e}")
+        print(f"❌ Error sending: {e}")
         import traceback
         traceback.print_exc()
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    print(f"[MSG] {message.author}: {message.content} in #{message.channel.name}")
+    await bot.process_commands(message)
 
 @bot.event
 async def on_error(event, *args, **kwargs):
