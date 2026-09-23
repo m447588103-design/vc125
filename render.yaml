@@ -1,11 +1,39 @@
+# Render Blueprint - WHITE_WOLF Voice Bot
+# Eta GitHub e push korle Render auto detect korbe
+# Docs: https://render.com/docs/blueprint-spec
+
 services:
-  - type: worker
+  - type: web
     name: white-wolf-voice-bot
     runtime: python
+    plan: free
+    # Python version Render ke janano
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
+    # Health check - bot alive kina check korar jonno
+    healthCheckPath: /health
+    autoDeploy: true
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
       - key: DISCORD_TOKEN
         sync: false
       - key: NOTIFICATION_CHANNEL_ID
         sync: false
+      - key: PORT
+        value: 10000
+
+# Alternative: Jodi tomar paid plan thake tahole worker use korte paro (comment remove koro)
+#  - type: worker
+#    name: white-wolf-voice-bot-worker
+#    runtime: python
+#    plan: starter
+#    buildCommand: pip install -r requirements.txt
+#    startCommand: python bot.py
+#    envVars:
+#      - key: PYTHON_VERSION
+#        value: 3.11.0
+#      - key: DISCORD_TOKEN
+#        sync: false
+#      - key: NOTIFICATION_CHANNEL_ID
+#        sync: false
