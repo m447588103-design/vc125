@@ -4,7 +4,11 @@ services:
     runtime: python
     plan: free
     region: singapore
-    buildCommand: apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt
+    buildCommand: |
+      apt-get update -y
+      apt-get install -y ffmpeg
+      ffmpeg -version
+      pip install -r requirements.txt
     startCommand: python bot.py
     healthCheckPath: /health
     autoDeploy: true

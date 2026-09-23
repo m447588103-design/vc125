@@ -1,9 +1,6 @@
 """
-🐺 WHITE_WOLF KITT Voice TTS Bot - FINAL
-Kew voice e join korle bot nije VC te join hoye mukhe bolbe!
-"Joy join korse" "Joy leave nise" - Voice e bolbe, text e na!
-
-Render 100% Working - with FFmpeg + gTTS
+🐺 WHITE_WOLF Voice TTS Bot - FIXED VERSION
+Fix: Auto-reconnect, FFmpeg check, better error handling, no instant disconnect
 """
 
 import os
@@ -11,6 +8,8 @@ import asyncio
 import threading
 import time
 import uuid
+import shutil
+import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 import discord
@@ -21,14 +20,28 @@ load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 PORT = int(os.getenv('PORT', 10000))
-VOICE_LANG = os.getenv('VOICE_LANG', 'en')  # en or bn
+VOICE_LANG = os.getenv('VOICE_LANG', 'bn')
 
 print(f"🔧 CONFIG: TOKEN={bool(TOKEN)} | PORT={PORT} | LANG={VOICE_LANG}", flush=True)
 
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN missing!")
 
-# ========== WEB SERVER FOR RENDER ==========
+# ========== CHECK FFMPEG ON STARTUP ==========
+print("🔍 Checking FFmpeg...", flush=True)
+ffmpeg_path = shutil.which("ffmpeg")
+if ffmpeg_path:
+    print(f"✅ FFmpeg found at: {ffmpeg_path}", flush=True)
+    try:
+        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
+        print(f"✅ FFmpeg version: {result.stdout.splitlines()[0]}", flush=True)
+    except Exception as e:
+        print(f"⚠️ FFmpeg version check failed: {e}", flush=True)
+else:
+    print("❌ FFmpeg NOT FOUND! Voice will NOT work!", flush=True)
+    print("   -> Render buildCommand e 'apt-get install -y ffmpeg' thakte hobe", flush=True)
+
+# ========== WEB SERVER ==========
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -37,7 +50,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/health':
             self.wfile.write(b'OK - Voice TTS Bot Running')
         else:
-            self.wfile.write(b'WHITE_WOLF Voice TTS Bot Alive - Joins VC and Speaks!')
+            status = f"Bot Alive | FFmpeg: {bool(ffmpeg_path)} | Voice Ready"
+            self.wfile.write(status.encode())
     def log_message(self, format, *args):
         return
 
@@ -53,7 +67,7 @@ def start_web():
 threading.Thread(target=start_web, daemon=True).start()
 time.sleep(1)
 
-# ========== DISCORD BOT ==========
+# ========== DISCORD ==========
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
@@ -62,164 +76,166 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
-# Guild wise voice client lock to avoid overlapping speech
 speaking_locks = {}
+# Track if bot should stay in VC
+should_stay = {}
 
-async def speak_in_vc(guild, text, channel_to_join=None):
-    """
-    Bot VC te join hoye text ta bolbe
-    """
+async def ensure_voice(guild, channel):
+    """Bot ke VC te connect/reconnect korbe, disconnect hobe na"""
     try:
-        # Get or create lock for this guild
-        if guild.id not in speaking_locks:
-            speaking_locks[guild.id] = asyncio.Lock()
-        
-        async with speaking_locks[guild.id]:
-            voice_client = guild.voice_client
-            
-            # If bot not in VC, join the target channel
-            if voice_client is None and channel_to_join:
-                print(f"🔊 Joining VC: {channel_to_join.name} in {guild.name}", flush=True)
+        vc = guild.voice_client
+        if vc is None:
+            print(f"🔊 Connecting to {channel.name} in {guild.name}", flush=True)
+            vc = await channel.connect(timeout=10, self_deaf=False, self_mute=False)
+            print(f"✅ Connected to {channel.name}", flush=True)
+            should_stay[guild.id] = True
+            return vc
+        elif vc.channel.id != channel.id:
+            print(f"🔄 Moving from {vc.channel.name} to {channel.name}", flush=True)
+            await vc.move_to(channel)
+            return vc
+        else:
+            # Already in correct channel
+            if not vc.is_connected():
+                print(f"⚠️ VC disconnected, reconnecting to {channel.name}", flush=True)
                 try:
-                    voice_client = await channel_to_join.connect()
-                except discord.ClientException:
-                    # Already connected somewhere, move
-                    voice_client = guild.voice_client
-                    if voice_client:
-                        await voice_client.move_to(channel_to_join)
-                except Exception as e:
-                    print(f"❌ Failed to join VC {channel_to_join.name}: {e}", flush=True)
-                    return
-            
-            # If channel_to_join given and bot in different channel, move
-            if voice_client and channel_to_join and voice_client.channel.id != channel_to_join.id:
-                print(f"🔄 Moving to {channel_to_join.name}", flush=True)
-                await voice_client.move_to(channel_to_join)
-            
-            if not voice_client:
-                print(f"❌ No voice client for {guild.name}", flush=True)
-                return
+                    await vc.disconnect(force=True)
+                except:
+                    pass
+                vc = await channel.connect(timeout=10)
+            return vc
+    except Exception as e:
+        print(f"❌ ensure_voice failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return None
 
-            # Generate TTS
-            # Use bn for Bangla, en for English - gTTS supports both
-            # If text has Bangla, use bn else en
+async def speak_text(guild, text, channel):
+    """TTS generate + play with full error handling"""
+    if guild.id not in speaking_locks:
+        speaking_locks[guild.id] = asyncio.Lock()
+    
+    async with speaking_locks[guild.id]:
+        vc = await ensure_voice(guild, channel)
+        if not vc:
+            print(f"❌ No VC to speak in {guild.name}", flush=True)
+            return False
+
+        # Check ffmpeg
+        if not shutil.which("ffmpeg"):
+            print("❌ FFmpeg not found, cannot play!", flush=True)
+            return False
+
+        filename = f"/tmp/tts_{uuid.uuid4().hex}.mp3"
+        try:
+            # TTS Generation
             lang = VOICE_LANG
-            # Auto detect if Bangla characters
+            # If Bangla chars, use bn
             if any('\u0980' <= c <= '\u09FF' for c in text):
                 lang = 'bn'
             
-            filename = f"/tmp/tts_{uuid.uuid4().hex}.mp3"
-            print(f"🗣️ TTS Generating: '{text}' lang={lang} -> {filename}", flush=True)
-            
+            print(f"🗣️ Generating TTS: '{text}' lang={lang}", flush=True)
             try:
                 tts = gTTS(text=text, lang=lang, slow=False)
                 tts.save(filename)
+                print(f"✅ TTS saved: {filename} ({os.path.getsize(filename)} bytes)", flush=True)
             except Exception as e:
-                print(f"❌ gTTS failed (lang {lang}), trying en: {e}", flush=True)
-                # Fallback to English
-                try:
-                    tts = gTTS(text=text, lang='en', slow=False)
-                    tts.save(filename)
-                except Exception as e2:
-                    print(f"❌ gTTS fallback failed: {e2}", flush=True)
-                    return
+                print(f"⚠️ gTTS {lang} failed: {e}, trying en", flush=True)
+                tts = gTTS(text=text, lang='en', slow=False)
+                tts.save(filename)
+                print(f"✅ TTS fallback saved", flush=True)
 
-            # Play audio
+            # Play
+            if not os.path.exists(filename) or os.path.getsize(filename) == 0:
+                print(f"❌ TTS file empty or missing!", flush=True)
+                return False
+
+            # Stop if already playing
+            if vc.is_playing():
+                vc.stop()
+                await asyncio.sleep(0.5)
+
+            print(f"▶️ Playing in {vc.channel.name}: {text}", flush=True)
+            source = discord.FFmpegPCMAudio(filename, options='-vn -loglevel quiet')
+            vc.play(source)
+
+            # Wait with timeout (max 15 sec per message)
+            timeout = 15
+            start = time.time()
+            while vc.is_playing() and (time.time() - start) < timeout:
+                await asyncio.sleep(0.5)
+            
+            if vc.is_playing():
+                print(f"⚠️ Play timeout, stopping", flush=True)
+                vc.stop()
+            
+            print(f"✅ Done speaking: {text}", flush=True)
+            return True
+
+        except Exception as e:
+            print(f"❌ speak_text error: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
             try:
-                # Check ffmpeg exists
-                audio_source = discord.FFmpegPCMAudio(filename, options='-vn')
-                
-                if voice_client.is_playing():
-                    voice_client.stop()
-                
-                print(f"▶️ Playing: {text}", flush=True)
-                voice_client.play(audio_source)
-                
-                # Wait until finished
-                while voice_client.is_playing():
-                    await asyncio.sleep(0.5)
-                
-                print(f"✅ Finished speaking: {text}", flush=True)
-                
-            except discord.errors.ClientException as e:
-                print(f"❌ FFmpeg error - is ffmpeg installed? {e}", flush=True)
-                print("   -> Render buildCommand e 'apt-get install -y ffmpeg' add koro", flush=True)
-            except Exception as e:
-                print(f"❌ Play error: {e}", flush=True)
-            finally:
-                # Cleanup file
-                try:
-                    if os.path.exists(filename):
-                        os.remove(filename)
-                except:
-                    pass
-
-    except Exception as e:
-        print(f"❌ speak_in_vc error: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+                if os.path.exists(filename):
+                    os.remove(filename)
+            except:
+                pass
 
 @bot.event
 async def on_ready():
-    print(f"\n{'='*60}\n🐺 WHITE_WOLF VOICE TTS BOT ONLINE!\n🤖 {bot.user} | Guilds: {len(bot.guilds)}\n🎙️ Mode: Bot will JOIN VC and SPEAK!\n{'='*60}\n", flush=True)
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="Voice Joins | !help"))
+    print(f"\n{'='*60}\n🐺 VOICE TTS BOT ONLINE! {bot.user}\nFFmpeg: {bool(ffmpeg_path)} | Guilds: {len(bot.guilds)}\n{'='*60}\n", flush=True)
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="!join | Voice TTS"))
 
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.bot:
         return
 
-    print(f"[VOICE] {member.display_name} | {before.channel} -> {after.channel} | Guild: {member.guild.name}", flush=True)
+    print(f"[VOICE] {member.display_name} | {before.channel} -> {after.channel} | {member.guild.name}", flush=True)
 
     try:
-        # === JOIN ===
         if before.channel is None and after.channel is not None:
-            # Someone joined VC
-            text_bangla = f"{member.display_name} voice e join korse"
-            text_english = f"{member.display_name} joined {after.channel.name}"
-            # Use Bangla as user requested
-            text = text_bangla
-            
-            print(f"   -> JOIN: {text} | Channel: {after.channel.name}", flush=True)
-            await speak_in_vc(member.guild, text, after.channel)
+            # JOIN
+            text = f"{member.display_name} voice e join korse"
+            print(f"   -> JOIN: {text}", flush=True)
+            # Small delay so Discord VC fully ready
+            await asyncio.sleep(1)
+            await speak_text(member.guild, text, after.channel)
 
-        # === LEAVE ===
         elif before.channel is not None and after.channel is None:
-            # Someone left VC
-            # If bot is in same channel and now channel empty (only bot left), bot will speak then leave
-            voice_client = member.guild.voice_client
+            # LEAVE
+            text = f"{member.display_name} voice theke leave nise"
+            print(f"   -> LEAVE: {text}", flush=True)
             
-            text_bangla = f"{member.display_name} voice theke leave nise"
-            text_english = f"{member.display_name} left {before.channel.name}"
-            text = text_bangla
-            
-            print(f"   -> LEAVE: {text} | Channel: {before.channel.name}", flush=True)
-            
-            if voice_client and voice_client.channel.id == before.channel.id:
-                # Bot is in same channel where person left
-                # Speak first
-                await speak_in_vc(member.guild, text, before.channel)
-                
-                # Check if channel now empty (only bot)
-                await asyncio.sleep(1)
-                if len(before.channel.members) == 1 and before.channel.members[0].bot:
-                    print(f"   -> Channel {before.channel.name} empty, leaving...", flush=True)
-                    await asyncio.sleep(2)
-                    await voice_client.disconnect()
+            vc = member.guild.voice_client
+            if vc and vc.channel.id == before.channel.id:
+                await speak_text(member.guild, text, before.channel)
+                # Don't disconnect instantly - wait 30s, if empty then leave
+                await asyncio.sleep(3)
+                # Check if only bot left
+                if len(before.channel.members) == 1 and before.channel.members[0].id == bot.user.id:
+                    print(f"   -> Channel empty, will stay 30s then leave", flush=True)
+                    await asyncio.sleep(30)
+                    # Check again
+                    if len(before.channel.members) == 1:
+                        try:
+                            await vc.disconnect()
+                            print(f"   -> Left empty channel {before.channel.name}", flush=True)
+                            should_stay.pop(member.guild.id, None)
+                        except:
+                            pass
             else:
-                # Bot not in that channel, try to join and speak? Or just ignore
-                # For leave, we can join to speak if bot was not there? Let's not join for leave if bot not there
-                # But if user wants bot to always speak, we can join before channel? No, channel already empty for that user
-                # So only speak if bot already in that channel
-                if voice_client:
-                    await speak_in_vc(member.guild, text, voice_client.channel)
+                # Bot not in that channel, don't speak for leave
+                print(f"   -> Bot not in {before.channel.name}, skip leave announcement", flush=True)
 
-        # === MOVE ===
         elif before.channel and after.channel and before.channel.id != after.channel.id:
-            text_bangla = f"{member.display_name} {before.channel.name} theke {after.channel.name} e move korse"
-            text = text_bangla
+            text = f"{member.display_name} {after.channel.name} e move korse"
             print(f"   -> MOVE: {text}", flush=True)
-            await speak_in_vc(member.guild, text, after.channel)
+            await asyncio.sleep(1)
+            await speak_text(member.guild, text, after.channel)
 
     except Exception as e:
         print(f"❌ Voice event error: {e}", flush=True)
@@ -229,71 +245,76 @@ async def on_voice_state_update(member, before, after):
 # ========== COMMANDS ==========
 @bot.command(name="join")
 async def join_cmd(ctx):
-    """Bot ke tomar VC te anbe"""
     if not ctx.author.voice:
-        await ctx.send("❌ Tumi kono VC te nai! Age VC te join koro")
+        await ctx.send("❌ Age VC te join koro!")
         return
-    
-    channel = ctx.author.voice.channel
+    ch = ctx.author.voice.channel
     try:
-        if ctx.voice_client:
-            await ctx.voice_client.move_to(channel)
+        vc = await ensure_voice(ctx.guild, ch)
+        if vc:
+            await ctx.send(f"✅ Joined {ch.mention} | Ekhon kew join/leave korle bolbo! FFmpeg: {bool(ffmpeg_path)}")
+            await asyncio.sleep(1)
+            await speak_text(ctx.guild, f"Hello! Ami White Wolf bot, voice log bolbo", ch)
         else:
-            await channel.connect()
-        await ctx.send(f"✅ Joined {channel.mention} | Ekhon kew join/leave korle ami voice e bolbo!")
-        # Speak welcome
-        await speak_in_vc(ctx.guild, f"Hello! Ami White Wolf bot, ekhon theke voice log bolbo", channel)
+            await ctx.send("❌ VC join failed!")
     except Exception as e:
-        await ctx.send(f"❌ Join failed: {e}")
+        await ctx.send(f"❌ {e}")
 
 @bot.command(name="leave")
 async def leave_cmd(ctx):
-    """Bot VC theke ber hobe"""
     if ctx.voice_client:
+        should_stay.pop(ctx.guild.id, None)
         await ctx.voice_client.disconnect()
-        await ctx.send("👋 VC theke leave nilam")
+        await ctx.send("👋 Leave nilam")
     else:
-        await ctx.send("❌ Ami kono VC te nai")
+        await ctx.send("❌ VC te nai")
 
 @bot.command(name="say")
 async def say_cmd(ctx, *, text: str):
-    """Bot ke diye voice e kichu bolabe - !say Hello world"""
     if not ctx.voice_client:
         if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
+            await ensure_voice(ctx.guild, ctx.author.voice.channel)
         else:
-            await ctx.send("❌ Age !join diye VC te ano")
+            await ctx.send("❌ Age !join")
             return
-    
-    await ctx.send(f"🗣️ Bolchi: {text}")
-    await speak_in_vc(ctx.guild, text, ctx.voice_client.channel)
-
-@bot.command(name="ping")
-async def ping(ctx):
-    await ctx.send(f"🏓 Pong {round(bot.latency*1000)}ms | Voice TTS Bot 🐺")
+    await ctx.send(f"🗣️ {text}")
+    await speak_text(ctx.guild, text, ctx.voice_client.channel)
 
 @bot.command(name="testvoice")
 async def testvoice_cmd(ctx):
-    """Test voice TTS"""
     if not ctx.author.voice:
-        await ctx.send("❌ Age VC te join koro, tarpor !testvoice")
+        await ctx.send("❌ VC te join koro age")
         return
-    
-    channel = ctx.author.voice.channel
-    if not ctx.voice_client:
-        await channel.connect()
-    
-    await ctx.send(f"🎙️ Testing voice in {channel.mention}...")
-    await speak_in_vc(ctx.guild, f"Test successful! {ctx.author.display_name} voice test korse", channel)
-    await speak_in_vc(ctx.guild, f"{ctx.author.display_name} voice e join korse", channel)
+    ch = ctx.author.voice.channel
+    await ensure_voice(ctx.guild, ch)
+    await ctx.send(f"🎙️ Testing in {ch.mention} | FFmpeg: {ffmpeg_path}")
+    await speak_text(ctx.guild, f"Test successful! {ctx.author.display_name} voice test", ch)
+    await asyncio.sleep(1)
+    await speak_text(ctx.guild, f"{ctx.author.display_name} voice e join korse", ch)
+
+@bot.command(name="ffmpegcheck")
+async def ffmpegcheck_cmd(ctx):
+    path = shutil.which("ffmpeg")
+    if path:
+        try:
+            r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
+            ver = r.stdout.splitlines()[0]
+            await ctx.send(f"✅ FFmpeg OK: {path}\n{ver}")
+        except Exception as e:
+            await ctx.send(f"⚠️ FFmpeg found at {path} but version check failed: {e}")
+    else:
+        await ctx.send("❌ FFmpeg NOT FOUND! Render buildCommand e `apt-get install -y ffmpeg` add koro")
+
+@bot.command(name="ping")
+async def ping(ctx):
+    await ctx.send(f"🏓 {round(bot.latency*1000)}ms | FFmpeg: {bool(ffmpeg_path)} | VC: {bool(ctx.voice_client)}")
 
 @bot.command(name="help")
 async def help_cmd(ctx):
-    embed = discord.Embed(title="🐺 WHITE_WOLF Voice TTS Bot", description="Bot VC te join hoye mukhe bolbe!", color=discord.Color.green())
-    embed.add_field(name="🎙️ Auto", value="• Join korle VC te ese bolbe 'X join korse'\n• Leave nile bolbe 'X leave nise'\n• Move korle bolbe", inline=False)
-    embed.add_field(name="💬 Commands", value="`!join` - Bot ke VC te ano\n`!leave` - Bot VC theke ber hobe\n`!say <text>` - Bot ke diye kichu bolao\n`!testvoice` - Voice test\n`!ping` - Ping check\n`!help` - Help", inline=False)
-    embed.add_field(name="⚙️ Setup", value="1. `!join` diye bot ke VC te ano\n2. Kew join/leave korle bot auto bolbe\n3. Render e FFmpeg auto install hobe", inline=False)
-    embed.set_footer(text="WHITE_WOLF GLOBAL • Voice TTS")
+    embed = discord.Embed(title="🐺 Voice TTS Bot - Fixed", color=discord.Color.green())
+    embed.add_field(name="Auto", value="Join/Leave/Move bolbe voice e", inline=False)
+    embed.add_field(name="Commands", value="`!join` `!leave` `!say <text>` `!testvoice` `!ffmpegcheck` `!ping`", inline=False)
+    embed.add_field(name="Fix", value="FFmpeg check + auto-reconnect + no instant disconnect", inline=False)
     await ctx.send(embed=embed)
 
 @bot.event
@@ -303,5 +324,5 @@ async def on_message(message):
     await bot.process_commands(message)
 
 if __name__ == "__main__":
-    print("🚀 Starting Voice TTS Bot...", flush=True)
+    print("🚀 Starting Voice TTS Bot - Fixed Version...", flush=True)
     bot.run(TOKEN)
