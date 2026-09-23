@@ -1,147 +1,87 @@
-# 🐺 WHITE_WOLF Voice Bot - Render Ready V2 (100% Working)
+# 🐺 WHITE_WOLF Voice TTS Bot - VC te Ese Bolbe!
 
-**New Design:** Flask + threading bad diye ekhon **aiohttp + asyncio** diye banano — Render e `No open ports detected` error 100% fix!
-
-Voice channel e kew join/leave/move korle auto embed notification pathabe.
+**KITT Style Voice Bot:** Kew voice channel e join korle bot **nije VC te join hoye mukhe bolbe** "X join korse", leave nile "X leave nise" — text e na, **voice e bolbe!**
 
 ---
 
-## ✅ V2 te ki fix kora hoise?
+## 🎙️ Ki kore?
 
-**V1 Problem:**
-- Flask thread use korsilam, Render port detect korte parto na
-- `No open ports detected` -> Render bot ke kill kore dito
-- Tai voice log kaj korto na
+- **Join:** `Joy` VC te join korlo → Bot VC te join hoye bolbe: **"Joy voice e join korse"**
+- **Leave:** `Joy` leave nilo → Bot bolbe: **"Joy voice theke leave nise"**
+- **Move:** Channel change korle bolbe
 
-**V2 Solution:**
-- `aiohttp` web server, same asyncio loop e Discord bot er sathe chole
-- Render er port 60s er moddhe instant bind hoy
-- No threading, no Flask — 100% stable
+100% Render Free Tier compatible!
 
 ---
 
-## 🚀 Render e Deploy (Bangla Guide)
+## 🚀 Render e Deploy
 
-### 1. GitHub e Push
-Ei repo ta GitHub e push koro.
+### Build & Start Command:
+- **Build:** `apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt`
+- **Start:** `python bot.py`
 
-### 2. Render e Service Banao
-- https://dashboard.render.com > **New + > Web Service**
-- GitHub repo connect koro `vc125`
-- **Name:** `white-wolf-voice-bot`
-- **Region:** `Singapore` (BD er jonno fast)
-- **Branch:** `main` ba tomar branch
-- **Runtime:** `Python 3`
-- **Build Command:** `pip install -r requirements.txt`
-- **Start Command:** `python bot.py`
-- **Plan:** `Free`
+Render Dashboard e auto set ache `render.yaml` theke.
 
-### 3. Environment Variables (Most Important!)
-**Environment** tab e 2 ta add koro:
-
+### Environment Variables:
 | Key | Value | Kothay paba |
 |-----|-------|-------------|
-| `DISCORD_TOKEN` | `MTM...` | Discord Developer Portal > Bot > Token |
-| `NOTIFICATION_CHANNEL_ID` | `1234567890` | Discord channel e Right Click > Copy ID |
-| `PORT` | `10000` | Auto thakbe |
+| `DISCORD_TOKEN` | Bot token | Discord Dev Portal > Bot > Token |
+| `VOICE_LANG` | `bn` (Bangla) ba `en` (English) | Optional, default `en` |
+| `PORT` | `10000` | Auto |
 
-> ⚠️ Token kokhono GitHub e dio na!
+### Discord Portal Setup (Must!):
+1. https://discord.com/developers/applications > Bot
+2. **Privileged Intents:**
+   - ✅ SERVER MEMBERS INTENT = ON
+   - ✅ MESSAGE CONTENT INTENT = ON
+3. **Bot Permissions:** 
+   - `View Channel`, `Send Messages`, `Connect`, `Speak`, `Use Voice Activity`
 
-### 4. Discord Developer Portal Setup (Must!)
-https://discord.com/developers/applications > Tomar App > **Bot** tab:
-
-**Privileged Gateway Intents:**
-- ✅ **SERVER MEMBERS INTENT** = ON
-- ✅ **MESSAGE CONTENT INTENT** = ON
-- ✅ **PRESENCE INTENT** = OFF (lagbe na)
-
-Save koro.
-
-**Bot Invite Link:**
-OAuth2 > URL Generator:
-- Scopes: `bot`
-- Permissions: `View Channel`, `Send Messages`, `Embed Links`, `Read Message History`, `Connect`, `View Voice Channel`
-
-### 5. Deploy!
-**Manual Deploy > Deploy latest commit** click koro.
-
-**Logs e dekhba:**
-```
-✅ WEB SERVER started on 0.0.0.0:10000
-🐺 WHITE_WOLF Voice Bot Online!
-✅ Startup message sent!
-```
-Jodi `No open ports detected` na ase, mane success!
-
-Discord e bot message pathabe: `🟢 WHITE_WOLF Bot Online!`
+### Invite Link:
+OAuth2 > URL Generator > Scopes: `bot` + `applications.commands`
+Permissions: `Connect`, `Speak`, `View Channel`, `Send Messages`
 
 ---
 
-## 🧪 Test Commands
+## 💬 Commands
 
-Discord e giye:
+- `!join` - Bot ke tomar VC te anbe (age VC te join koro)
+- `!leave` - Bot VC theke ber hobe
+- `!say <text>` - Bot ke diye kichu bolao, ex: `!say Hello guys`
+- `!testvoice` - Voice TTS test
+- `!ping` - Ping check
+- `!help` - Help
 
-- `!ping` - Bot alive kina
-- `!test` - Notification channel e test message
-- `!debug` - Sob info dekhabe
-- `!help` - Command list
-
-Voice channel e join/leave kore test koro, instant embed asbe.
-
----
-
-## 🔁 24/7 Online (Free Plan Trick)
-
-Free plan e 15 min inactive thakle sleep hoy. Tai UptimeRobot use koro:
-
-1. https://uptimerobot.com e free account
-2. New Monitor > HTTP(s)
-3. URL: `https://tomar-bot-name.onrender.com/health`
-4. Interval: 5 min
-
-Ete bot kokhono sleep hobe na!
+**Auto:** `!join` diye ekbar VC te anle, tarpor kew join/leave korle bot auto bolbe!
 
 ---
 
-## 📁 Files
-
-```
-bot.py              # Main bot + aiohttp server (Render 100% compatible)
-requirements.txt    # discord.py + aiohttp + dotenv
-render.yaml         # Blueprint - auto deploy
-runtime.txt         # Python 3.11
-.env.example        # Local test er jonno example
-.gitignore
-README.md
-```
-
-## 🖥️ Local Test
+## 🔧 Local Test
 
 ```bash
-cp .env.example .env
-# .env e token boshao
+# FFmpeg install koro (must)
+# Windows: https://ffmpeg.org/download.html
+# Linux: sudo apt install ffmpeg
+
 pip install -r requirements.txt
 python bot.py
-# Browser: http://localhost:10000
-# Health: http://localhost:10000/health
 ```
 
 ---
 
-## ❓ Common Problems
+## ❓ Common Issues
 
-**1. Bot online but voice log ase na?**
-- Portal e SERVER MEMBERS INTENT ON korso?
-- `!debug` e channel found dekhay?
-- Bot ke voice channel dekhte permission ase?
+**1. Bot VC te join hoy na?**
+- `!join` command e age VC te thako
+- Bot er `Connect` + `Speak` permission ache?
 
-**2. Startup message ase na?**
-- NOTIFICATION_CHANNEL_ID vul
-- Bot er Send Messages permission nai
+**2. Voice e kotha bole na?**
+- Render log e `FFmpeg error` ase? Build command e `ffmpeg` install ache?
+- `!testvoice` diye test koro
 
-**3. Render e No open ports?**
-- V2 te fix kora, ar asbe na. Asle `PORT` env check koro.
+**3. No open ports error?**
+- Ekhon fix kora, http.server use kora hoise
 
 ---
 
-Made with ❤️ for **WHITE_WOLF GLOBAL** 🐺
+Made for **WHITE_WOLF GLOBAL** 🐺 - KITT Style Voice TTS
