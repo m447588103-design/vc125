@@ -38,7 +38,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.path == '/health':
             self.wfile.write(b'OK - Bot is running')
         else:
-            self.wfile.write(b'🐺 WHITE_WOLF Voice Bot is Alive! ✅')
+            self.wfile.write("WHITE_WOLF Voice Bot is Alive!".encode('utf-8'))
     
     def log_message(self, format, *args):
         # Render log spam komanor jonno http log off
