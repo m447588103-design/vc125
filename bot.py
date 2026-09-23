@@ -1,65 +1,96 @@
 """
-🐺 WHITE_WOLF Voice TTS Bot - FIXED VERSION
-Fix: Auto-reconnect, FFmpeg check, better error handling, no instant disconnect
+DEBUG VERSION - Voice connection test without TTS
+To check if Render supports voice at all
 """
 
 import os
-import asyncio
 import threading
 import time
-import uuid
 import shutil
 import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 import discord
 from discord.ext import commands
-from gtts import gTTS
 
 load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 PORT = int(os.getenv('PORT', 10000))
-VOICE_LANG = os.getenv('VOICE_LANG', 'bn')
+NOTIFICATION_CHANNEL_ID = os.getenv('NOTIFICATION_CHANNEL_ID')  # Optional fallback text channel
+if NOTIFICATION_CHANNEL_ID:
+    try:
+        NOTIFICATION_CHANNEL_ID = int(NOTIFICATION_CHANNEL_ID)
+    except:
+        NOTIFICATION_CHANNEL_ID = None
+else:
+    NOTIFICATION_CHANNEL_ID = None
 
-print(f"🔧 CONFIG: TOKEN={bool(TOKEN)} | PORT={PORT} | LANG={VOICE_LANG}", flush=True)
+print(f"🔧 CONFIG: TOKEN={bool(TOKEN)} | PORT={PORT} | TEXT_CHANNEL={NOTIFICATION_CHANNEL_ID}", flush=True)
 
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN missing!")
 
-# ========== CHECK FFMPEG ON STARTUP ==========
-print("🔍 Checking FFmpeg...", flush=True)
+# Check FFmpeg and Opus
+print("🔍 Checking FFmpeg & Opus...", flush=True)
 ffmpeg_path = shutil.which("ffmpeg")
+print(f"FFmpeg path: {ffmpeg_path}", flush=True)
 if ffmpeg_path:
-    print(f"✅ FFmpeg found at: {ffmpeg_path}", flush=True)
     try:
-        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
-        print(f"✅ FFmpeg version: {result.stdout.splitlines()[0]}", flush=True)
+        r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
+        print(f"✅ FFmpeg: {r.stdout.splitlines()[0]}", flush=True)
     except Exception as e:
-        print(f"⚠️ FFmpeg version check failed: {e}", flush=True)
+        print(f"⚠️ FFmpeg check fail: {e}", flush=True)
 else:
-    print("❌ FFmpeg NOT FOUND! Voice will NOT work!", flush=True)
-    print("   -> Render buildCommand e 'apt-get install -y ffmpeg' thakte hobe", flush=True)
+    print("❌ FFmpeg NOT FOUND!", flush=True)
 
-# ========== WEB SERVER ==========
+try:
+    import nacl
+    print(f"✅ PyNaCl installed: {nacl.__version__}", flush=True)
+except Exception as e:
+    print(f"❌ PyNaCl missing: {e}", flush=True)
+
+# Check opus
+try:
+    if discord.opus.is_loaded():
+        print("✅ Opus already loaded", flush=True)
+    else:
+        # Try to load
+        try:
+            discord.opus.load_opus('libopus.so.0')
+            print("✅ Opus loaded via libopus.so.0", flush=True)
+        except:
+            try:
+                discord.opus.load_opus('libopus.so')
+                print("✅ Opus loaded via libopus.so", flush=True)
+            except Exception as e:
+                print(f"⚠️ Opus not loaded, will try auto: {e}", flush=True)
+                # Try auto
+                if not discord.opus.is_loaded():
+                    print("❌ Opus NOT loaded - voice may fail!", flush=True)
+                else:
+                    print("✅ Opus auto-loaded", flush=True)
+except Exception as e:
+    print(f"⚠️ Opus check error: {e}", flush=True)
+
+# Web server
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         if self.path == '/health':
-            self.wfile.write(b'OK - Voice TTS Bot Running')
+            self.wfile.write(b'OK - Debug Voice Bot')
         else:
-            status = f"Bot Alive | FFmpeg: {bool(ffmpeg_path)} | Voice Ready"
-            self.wfile.write(status.encode())
+            self.wfile.write(f"Debug Voice Bot | FFmpeg: {bool(ffmpeg_path)} | Opus: {discord.opus.is_loaded()}".encode())
     def log_message(self, format, *args):
         return
 
 def start_web():
     try:
-        print(f"🌐 Web server on 0.0.0.0:{PORT}...", flush=True)
+        print(f"🌐 Web on 0.0.0.0:{PORT}", flush=True)
         httpd = HTTPServer(('0.0.0.0', PORT), Handler)
-        print(f"✅ WEB SERVER LISTENING on 0.0.0.0:{PORT}", flush=True)
+        print(f"✅ WEB LISTENING on 0.0.0.0:{PORT}", flush=True)
         httpd.serve_forever()
     except Exception as e:
         print(f"❌ Web error: {e}", flush=True)
@@ -67,7 +98,6 @@ def start_web():
 threading.Thread(target=start_web, daemon=True).start()
 time.sleep(1)
 
-# ========== DISCORD ==========
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
@@ -76,246 +106,143 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
-speaking_locks = {}
-# Track if bot should stay in VC
-should_stay = {}
-
-async def ensure_voice(guild, channel):
-    """Bot ke VC te connect/reconnect korbe, disconnect hobe na"""
-    try:
-        vc = guild.voice_client
-        if vc is None:
-            print(f"🔊 Connecting to {channel.name} in {guild.name}", flush=True)
-            vc = await channel.connect(timeout=10, self_deaf=False, self_mute=False)
-            print(f"✅ Connected to {channel.name}", flush=True)
-            should_stay[guild.id] = True
-            return vc
-        elif vc.channel.id != channel.id:
-            print(f"🔄 Moving from {vc.channel.name} to {channel.name}", flush=True)
-            await vc.move_to(channel)
-            return vc
-        else:
-            # Already in correct channel
-            if not vc.is_connected():
-                print(f"⚠️ VC disconnected, reconnecting to {channel.name}", flush=True)
-                try:
-                    await vc.disconnect(force=True)
-                except:
-                    pass
-                vc = await channel.connect(timeout=10)
-            return vc
-    except Exception as e:
-        print(f"❌ ensure_voice failed: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
-        return None
-
-async def speak_text(guild, text, channel):
-    """TTS generate + play with full error handling"""
-    if guild.id not in speaking_locks:
-        speaking_locks[guild.id] = asyncio.Lock()
-    
-    async with speaking_locks[guild.id]:
-        vc = await ensure_voice(guild, channel)
-        if not vc:
-            print(f"❌ No VC to speak in {guild.name}", flush=True)
-            return False
-
-        # Check ffmpeg
-        if not shutil.which("ffmpeg"):
-            print("❌ FFmpeg not found, cannot play!", flush=True)
-            return False
-
-        filename = f"/tmp/tts_{uuid.uuid4().hex}.mp3"
-        try:
-            # TTS Generation
-            lang = VOICE_LANG
-            # If Bangla chars, use bn
-            if any('\u0980' <= c <= '\u09FF' for c in text):
-                lang = 'bn'
-            
-            print(f"🗣️ Generating TTS: '{text}' lang={lang}", flush=True)
-            try:
-                tts = gTTS(text=text, lang=lang, slow=False)
-                tts.save(filename)
-                print(f"✅ TTS saved: {filename} ({os.path.getsize(filename)} bytes)", flush=True)
-            except Exception as e:
-                print(f"⚠️ gTTS {lang} failed: {e}, trying en", flush=True)
-                tts = gTTS(text=text, lang='en', slow=False)
-                tts.save(filename)
-                print(f"✅ TTS fallback saved", flush=True)
-
-            # Play
-            if not os.path.exists(filename) or os.path.getsize(filename) == 0:
-                print(f"❌ TTS file empty or missing!", flush=True)
-                return False
-
-            # Stop if already playing
-            if vc.is_playing():
-                vc.stop()
-                await asyncio.sleep(0.5)
-
-            print(f"▶️ Playing in {vc.channel.name}: {text}", flush=True)
-            source = discord.FFmpegPCMAudio(filename, options='-vn -loglevel quiet')
-            vc.play(source)
-
-            # Wait with timeout (max 15 sec per message)
-            timeout = 15
-            start = time.time()
-            while vc.is_playing() and (time.time() - start) < timeout:
-                await asyncio.sleep(0.5)
-            
-            if vc.is_playing():
-                print(f"⚠️ Play timeout, stopping", flush=True)
-                vc.stop()
-            
-            print(f"✅ Done speaking: {text}", flush=True)
-            return True
-
-        except Exception as e:
-            print(f"❌ speak_text error: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
-            return False
-        finally:
-            try:
-                if os.path.exists(filename):
-                    os.remove(filename)
-            except:
-                pass
-
 @bot.event
 async def on_ready():
-    print(f"\n{'='*60}\n🐺 VOICE TTS BOT ONLINE! {bot.user}\nFFmpeg: {bool(ffmpeg_path)} | Guilds: {len(bot.guilds)}\n{'='*60}\n", flush=True)
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="!join | Voice TTS"))
+    print(f"\n{'='*60}\n🐺 DEBUG VOICE BOT ONLINE! {bot.user}\nFFmpeg: {ffmpeg_path} | Opus loaded: {discord.opus.is_loaded()}\n{'='*60}\n", flush=True)
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="Debug Mode | !join"))
 
 @bot.event
 async def on_voice_state_update(member, before, after):
+    # Log ALL voice events including bot's own
+    print(f"[VOICE] {member.display_name} (bot={member.bot}) | {before.channel} -> {after.channel} | Guild: {member.guild.name}", flush=True)
+    
+    if member.id == bot.user.id:
+        # Bot's own voice state changed
+        if before.channel is None and after.channel is not None:
+            print(f"   🤖 BOT JOINED {after.channel.name}", flush=True)
+        elif before.channel is not None and after.channel is None:
+            print(f"   🤖 BOT LEFT/DISCONNECTED from {before.channel.name} | Reason: {after}", flush=True)
+            # Log why disconnected
+            if after.channel is None:
+                print(f"   ⚠️ Bot was disconnected! Check if Render blocks UDP or voice", flush=True)
+        elif before.channel and after.channel and before.channel.id != after.channel.id:
+            print(f"   🤖 BOT MOVED {before.channel.name} -> {after.channel.name}", flush=True)
+        return
+
     if member.bot:
         return
 
-    print(f"[VOICE] {member.display_name} | {before.channel} -> {after.channel} | {member.guild.name}", flush=True)
+    # For normal users - just log, and if bot in VC, try to announce via TEXT as fallback
+    if before.channel is None and after.channel is not None:
+        print(f"   -> USER JOIN: {member.display_name} -> {after.channel.name}", flush=True)
+        # Fallback text notification if voice fails
+        if NOTIFICATION_CHANNEL_ID:
+            try:
+                ch = bot.get_channel(NOTIFICATION_CHANNEL_ID)
+                if not ch:
+                    ch = await bot.fetch_channel(NOTIFICATION_CHANNEL_ID)
+                if ch:
+                    await ch.send(f"🎙️ **{member.display_name}** joined **{after.channel.name}** (Voice debug mode - text fallback)")
+            except Exception as e:
+                print(f"   -> Text fallback fail: {e}", flush=True)
 
-    try:
-        if before.channel is None and after.channel is not None:
-            # JOIN
-            text = f"{member.display_name} voice e join korse"
-            print(f"   -> JOIN: {text}", flush=True)
-            # Small delay so Discord VC fully ready
-            await asyncio.sleep(1)
-            await speak_text(member.guild, text, after.channel)
+    elif before.channel is not None and after.channel is None:
+        print(f"   -> USER LEAVE: {member.display_name} <- {before.channel.name}", flush=True)
+        if NOTIFICATION_CHANNEL_ID:
+            try:
+                ch = bot.get_channel(NOTIFICATION_CHANNEL_ID)
+                if not ch:
+                    ch = await bot.fetch_channel(NOTIFICATION_CHANNEL_ID)
+                if ch:
+                    await ch.send(f"👋 **{member.display_name}** left **{before.channel.name}**")
+            except:
+                pass
 
-        elif before.channel is not None and after.channel is None:
-            # LEAVE
-            text = f"{member.display_name} voice theke leave nise"
-            print(f"   -> LEAVE: {text}", flush=True)
-            
-            vc = member.guild.voice_client
-            if vc and vc.channel.id == before.channel.id:
-                await speak_text(member.guild, text, before.channel)
-                # Don't disconnect instantly - wait 30s, if empty then leave
-                await asyncio.sleep(3)
-                # Check if only bot left
-                if len(before.channel.members) == 1 and before.channel.members[0].id == bot.user.id:
-                    print(f"   -> Channel empty, will stay 30s then leave", flush=True)
-                    await asyncio.sleep(30)
-                    # Check again
-                    if len(before.channel.members) == 1:
-                        try:
-                            await vc.disconnect()
-                            print(f"   -> Left empty channel {before.channel.name}", flush=True)
-                            should_stay.pop(member.guild.id, None)
-                        except:
-                            pass
-            else:
-                # Bot not in that channel, don't speak for leave
-                print(f"   -> Bot not in {before.channel.name}, skip leave announcement", flush=True)
-
-        elif before.channel and after.channel and before.channel.id != after.channel.id:
-            text = f"{member.display_name} {after.channel.name} e move korse"
-            print(f"   -> MOVE: {text}", flush=True)
-            await asyncio.sleep(1)
-            await speak_text(member.guild, text, after.channel)
-
-    except Exception as e:
-        print(f"❌ Voice event error: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
-
-# ========== COMMANDS ==========
 @bot.command(name="join")
 async def join_cmd(ctx):
+    """Debug join - just join, no TTS"""
     if not ctx.author.voice:
         await ctx.send("❌ Age VC te join koro!")
         return
+    
     ch = ctx.author.voice.channel
+    print(f"🔊 !join requested -> {ch.name} by {ctx.author}", flush=True)
+    
     try:
-        vc = await ensure_voice(ctx.guild, ch)
+        vc = ctx.voice_client
         if vc:
-            await ctx.send(f"✅ Joined {ch.mention} | Ekhon kew join/leave korle bolbo! FFmpeg: {bool(ffmpeg_path)}")
-            await asyncio.sleep(1)
-            await speak_text(ctx.guild, f"Hello! Ami White Wolf bot, voice log bolbo", ch)
+            if vc.channel.id == ch.id:
+                await ctx.send(f"✅ Already in {ch.mention} | Connected: {vc.is_connected()} | Opus: {discord.opus.is_loaded()} | FFmpeg: {bool(ffmpeg_path)}")
+                return
+            else:
+                print(f"🔄 Moving to {ch.name}", flush=True)
+                await vc.move_to(ch)
+                await ctx.send(f"✅ Moved to {ch.mention}")
+                return
         else:
-            await ctx.send("❌ VC join failed!")
+            print(f"🔊 Connecting to {ch.name}...", flush=True)
+            vc = await ch.connect(timeout=15, self_deaf=False, self_mute=False, self_stream=False)
+            print(f"✅ Connected to {ch.name} | VC: {vc} | Connected: {vc.is_connected()}", flush=True)
+            await ctx.send(f"✅ Joined {ch.mention}\nConnected: {vc.is_connected()}\nOpus: {discord.opus.is_loaded()}\nFFmpeg: {ffmpeg_path}\n\nEkhon 60 sec wait koro, disconnect hoy kina dekho. Jodi disconnect na hoy, tahole voice support kore. Jodi disconnect hoy, Render voice block kore.")
+            
+            # Monitor connection for 60s
+            for i in range(12):
+                await asyncio.sleep(5)
+                if not ctx.voice_client or not ctx.voice_client.is_connected():
+                    print(f"❌ VC disconnected after {i*5}s!", flush=True)
+                    await ctx.send(f"❌ Bot disconnected after {i*5} seconds! Render may block voice UDP.")
+                    return
+                print(f"   -> Still connected after {i*5}s | Channel: {ctx.voice_client.channel.name}", flush=True)
+            
+            await ctx.send("✅ Bot stayed 60s without disconnect! Voice works on Render, TTS issue chilo. Ebar TTS version e jabo.")
+            
     except Exception as e:
-        await ctx.send(f"❌ {e}")
+        print(f"❌ Join failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        await ctx.send(f"❌ Join failed: {e}\nFFmpeg: {ffmpeg_path}\nOpus: {discord.opus.is_loaded()}")
 
 @bot.command(name="leave")
 async def leave_cmd(ctx):
     if ctx.voice_client:
-        should_stay.pop(ctx.guild.id, None)
         await ctx.voice_client.disconnect()
-        await ctx.send("👋 Leave nilam")
+        await ctx.send("👋 Left")
     else:
-        await ctx.send("❌ VC te nai")
+        await ctx.send("❌ Not in VC")
 
-@bot.command(name="say")
-async def say_cmd(ctx, *, text: str):
-    if not ctx.voice_client:
-        if ctx.author.voice:
-            await ensure_voice(ctx.guild, ctx.author.voice.channel)
-        else:
-            await ctx.send("❌ Age !join")
-            return
-    await ctx.send(f"🗣️ {text}")
-    await speak_text(ctx.guild, text, ctx.voice_client.channel)
+@bot.command(name="debugvoice")
+async def debugvoice_cmd(ctx):
+    vc = ctx.voice_client
+    embed = discord.Embed(title="🔍 Voice Debug", color=discord.Color.blue())
+    embed.add_field(name="FFmpeg", value=f"{ffmpeg_path or 'NOT FOUND'}", inline=False)
+    embed.add_field(name="Opus Loaded", value=f"{discord.opus.is_loaded()}", inline=True)
+    embed.add_field(name="PyNaCl", value="Installed" if 'nacl' in globals() else "Check logs", inline=True)
+    embed.add_field(name="Voice Client", value=f"{vc.channel.name if vc else 'None'} | Connected: {vc.is_connected() if vc else False}", inline=False)
+    embed.add_field(name="User VC", value=f"{ctx.author.voice.channel.name if ctx.author.voice else 'Not in VC'}", inline=False)
+    embed.add_field(name="Render Voice", value="Render Free Web Service may block UDP. If bot disconnects instantly, use Railway.app or VPS", inline=False)
+    await ctx.send(embed=embed)
 
-@bot.command(name="testvoice")
-async def testvoice_cmd(ctx):
-    if not ctx.author.voice:
-        await ctx.send("❌ VC te join koro age")
-        return
-    ch = ctx.author.voice.channel
-    await ensure_voice(ctx.guild, ch)
-    await ctx.send(f"🎙️ Testing in {ch.mention} | FFmpeg: {ffmpeg_path}")
-    await speak_text(ctx.guild, f"Test successful! {ctx.author.display_name} voice test", ch)
-    await asyncio.sleep(1)
-    await speak_text(ctx.guild, f"{ctx.author.display_name} voice e join korse", ch)
-
-@bot.command(name="ffmpegcheck")
-async def ffmpegcheck_cmd(ctx):
-    path = shutil.which("ffmpeg")
-    if path:
-        try:
-            r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
-            ver = r.stdout.splitlines()[0]
-            await ctx.send(f"✅ FFmpeg OK: {path}\n{ver}")
-        except Exception as e:
-            await ctx.send(f"⚠️ FFmpeg found at {path} but version check failed: {e}")
-    else:
-        await ctx.send("❌ FFmpeg NOT FOUND! Render buildCommand e `apt-get install -y ffmpeg` add koro")
+@bot.command(name="testtts")
+async def testtts_cmd(ctx):
+    """Test gTTS without playing in VC - just generate file"""
+    await ctx.send("🔍 Testing gTTS generation...")
+    try:
+        from gtts import gTTS
+        import uuid, os
+        filename = f"/tmp/test_{uuid.uuid4().hex}.mp3"
+        tts = gTTS(text="Hello, this is a test", lang='en', slow=False)
+        tts.save(filename)
+        size = os.path.getsize(filename)
+        await ctx.send(f"✅ gTTS OK! File: {filename} Size: {size} bytes | FFmpeg: {ffmpeg_path}")
+        os.remove(filename)
+    except Exception as e:
+        await ctx.send(f"❌ gTTS failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 @bot.command(name="ping")
 async def ping(ctx):
-    await ctx.send(f"🏓 {round(bot.latency*1000)}ms | FFmpeg: {bool(ffmpeg_path)} | VC: {bool(ctx.voice_client)}")
-
-@bot.command(name="help")
-async def help_cmd(ctx):
-    embed = discord.Embed(title="🐺 Voice TTS Bot - Fixed", color=discord.Color.green())
-    embed.add_field(name="Auto", value="Join/Leave/Move bolbe voice e", inline=False)
-    embed.add_field(name="Commands", value="`!join` `!leave` `!say <text>` `!testvoice` `!ffmpegcheck` `!ping`", inline=False)
-    embed.add_field(name="Fix", value="FFmpeg check + auto-reconnect + no instant disconnect", inline=False)
-    await ctx.send(embed=embed)
+    await ctx.send(f"🏓 {round(bot.latency*1000)}ms | FFmpeg: {bool(ffmpeg_path)} | Opus: {discord.opus.is_loaded()}")
 
 @bot.event
 async def on_message(message):
@@ -324,5 +251,5 @@ async def on_message(message):
     await bot.process_commands(message)
 
 if __name__ == "__main__":
-    print("🚀 Starting Voice TTS Bot - Fixed Version...", flush=True)
+    print("🚀 Starting DEBUG Voice Bot...", flush=True)
     bot.run(TOKEN)
